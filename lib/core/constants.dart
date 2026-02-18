@@ -12,7 +12,7 @@ class AppConstants {
   static const double defaultWeightKg = 70.0;
   
   // Настройки POI и фактов
-  static const double poiCheckIntervalSeconds = 5.0;
-  static const double generalFactIntervalMinutes = 5.0;
-  static const double minDistanceBetweenPois = 30.0;
+  static const int poiRadius = 5000;              // Радиус поиска POI в метрах (5 км)
+  static const int poiTriggerRadius = 5000;        // Радиус срабатывания POI в метрах
+  static const int generalFactIntervalMinutes = 2; // Интервал между фактами в минутах
 }

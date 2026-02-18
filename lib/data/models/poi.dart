@@ -1,4 +1,5 @@
 import 'package:latlong2/latlong.dart';
+import 'dart:convert'; // Добавлен импорт для работы с JSON
 
 /// Модель POI (Point of Interest) - точка интереса
 /// Не хранится в Hive, получается с сервера
@@ -60,4 +61,39 @@ class Poi {
     'distance': distance,
     'in_range': inRange,
   };
+}
+
+/// POI из OpenStreetMap
+class OsmPoi {
+  final int osmId;
+  final String name;
+  final double lat;
+  final double lon;
+  final String category;
+  final double distance;
+  final Map<String, dynamic>? tags;
+
+  OsmPoi({
+    required this.osmId,
+    required this.name,
+    required this.lat,
+    required this.lon,
+    required this.category,
+    required this.distance,
+    this.tags,
+  });
+
+  LatLng get location => LatLng(lat, lon);
+
+  factory OsmPoi.fromJson(Map<String, dynamic> json) {
+    return OsmPoi(
+      osmId: json['osm_id'] as int,
+      name: json['name'] as String,
+      lat: double.parse(json['lat'].toString()),
+      lon: double.parse(json['lon'].toString()),
+      category: json['category'] as String,
+      distance: (json['distance'] as num?)?.toDouble() ?? 0,
+      tags: json['tags'] != null ? jsonDecode(json['tags']) : null,
+    );
+  }
 }

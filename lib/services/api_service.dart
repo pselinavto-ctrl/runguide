@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
+import 'package:hive_flutter/hive_flutter.dart';
 import '../core/constants.dart';
 import '../data/models/poi.dart';
 import '../data/models/fact.dart';
@@ -10,7 +12,23 @@ class ApiService {
   String? _deviceId;
   int? _currentCityId;
 
-  /// Установка ID устройства (для отслеживания прослушанных фактов)
+  /// Инициализация - создаёт или загружает ID устройства
+  Future<void> init() async {
+    final box = await Hive.openBox('settings');
+    _deviceId = box.get('device_id');
+    
+    if (_deviceId == null) {
+      _deviceId = 'user_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(999999)}';
+      await box.put('device_id', _deviceId);
+      print('🆔 Создан новый ID: $_deviceId');
+    } else {
+      print('🆔 Загружен ID: $_deviceId');
+    }
+  }
+  
+  String get userId => _deviceId ?? 'unknown';
+
+  /// Установка ID устройства
   void setDeviceId(String deviceId) {
     _deviceId = deviceId;
   }
@@ -19,8 +37,6 @@ class ApiService {
   void setCityId(int? cityId) {
     _currentCityId = cityId;
   }
-
-  String get _userId => _deviceId ?? 'device_${DateTime.now().millisecondsSinceEpoch}';
 
   /// Определить город по координатам
   Future<CityInfo?> getCity(double lat, double lon) async {
@@ -48,7 +64,7 @@ class ApiService {
     }
   }
 
-  /// Получить POI рядом с координатами
+  /// Получить POI рядом с координатами (из БД)
   Future<List<Poi>> getNearbyPois(double lat, double lon, {int radius = 500}) async {
     try {
       String url = '${AppConstants.apiUrl}/get_pois.php?lat=$lat&lon=$lon&radius=$radius';
@@ -73,11 +89,39 @@ class ApiService {
     }
   }
 
+  /// Получить POI из OpenStreetMap
+  Future<List<OsmPoi>> getOsmPois(double lat, double lon, {int radius = 1000}) async {
+    try {
+      print('🗺️ Запрос OSM POI: lat=$lat, lon=$lon, radius=$radius');
+      
+      final response = await _client.get(
+        Uri.parse('${AppConstants.apiUrl}/get_osm_pois.php?lat=$lat&lon=$lon&radius=$radius'),
+      ).timeout(const Duration(seconds: 30));
+
+      print('📦 OSM ответ: ${response.statusCode}');
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          final List<dynamic> poisData = data['data']['pois'];
+          print('✅ OSM POI найдено: ${poisData.length}');
+          return poisData.map((p) => OsmPoi.fromJson(p)).toList();
+        } else {
+          print('❌ OSM ошибка: ${data['error']}');
+        }
+      }
+      return [];
+    } catch (e) {
+      print('❌ Ошибка получения OSM POI: $e');
+      return [];
+    }
+  }
+
   /// Получить факт о конкретном POI
   Future<PoiFact?> getPoiFact(int poiId) async {
     try {
       final response = await _client.get(
-        Uri.parse('${AppConstants.apiUrl}/get_poi_fact.php?poi_id=$poiId&user_id=${_userId}'),
+        Uri.parse('${AppConstants.apiUrl}/get_poi_fact.php?poi_id=$poiId&user_id=$userId'),
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
@@ -98,10 +142,44 @@ class ApiService {
     }
   }
 
+  /// Получить уникальный факт о POI из OSM
+  Future<String?> getOsmPoiFact({
+    required int osmId,
+    required String poiName,
+    required String category,
+  }) async {
+    try {
+      final url = '${AppConstants.apiUrl}/generate_fact.php?type=poi'
+          '&osm_id=$osmId'
+          '&name=${Uri.encodeComponent(poiName)}'
+          '&category=$category'
+          '&user_id=$userId';
+
+      print('🗺️ Запрос факта о POI: $poiName');
+
+      final response = await _client.get(Uri.parse(url))
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          final source = data['data']['source'] ?? 'unknown';
+          final new_ = data['data']['new'] ?? true;
+          print('📝 POI факт: source=$source, new=$new_');
+          return data['data']['fact'];
+        }
+      }
+      return null;
+    } catch (e) {
+      print('❌ Ошибка получения факта POI: $e');
+      return null;
+    }
+  }
+
   /// Получить общий факт
   Future<GeneralFact?> getGeneralFact({String? category}) async {
     try {
-      String url = '${AppConstants.apiUrl}/get_general_fact.php?user_id=${_userId}';
+      String url = '${AppConstants.apiUrl}/get_general_fact.php?user_id=$userId';
       if (_currentCityId != null) {
         url += '&city_id=$_currentCityId';
       }
@@ -137,7 +215,7 @@ class ApiService {
         Uri.parse('${AppConstants.apiUrl}/save_visit.php'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'user_id': _userId,
+          'user_id': userId,
           'poi_id': poiId,
           'fact_id': factId,
         }),
@@ -160,12 +238,23 @@ class ApiService {
     int? poiId,
     String? category,
     String? cityName,
+    int? osmId,
+    String? poiName,
   }) async {
     try {
       String url = '${AppConstants.apiUrl}/generate_fact.php?type=$type';
       
+      // ДОБАВЛЯЕМ USER_ID - ЭТО БЫЛО ПРОПУЩЕНО!
+      url += '&user_id=$userId';
+      
       if (poiId != null) {
         url += '&poi_id=$poiId';
+      }
+      if (osmId != null) {
+        url += '&osm_id=$osmId';
+      }
+      if (poiName != null) {
+        url += '&name=${Uri.encodeComponent(poiName)}';
       }
       if (category != null) {
         url += '&category=$category';
@@ -182,9 +271,12 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data['success'] == true) {
-          final source = data['data']['source'];
-          print('📝 Источник факта: $source');
+          final source = data['data']['source'] ?? 'unknown';
+          final generated = data['data']['generated'] ?? false;
+          print('📝 Источник: $source, Сгенерирован: $generated');
           return data['data']['fact'];
+        } else {
+          print('❌ Ошибка API: ${data['error']}');
         }
       }
       return null;

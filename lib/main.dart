@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'data/models/route_point.dart';
 import 'data/models/run_session.dart';
+import 'services/api_service.dart'; // ИСПРАВЛЕНО: убрано data/
 import 'ui/screens/home_screen.dart';
 
 void main() async {
@@ -17,6 +18,10 @@ void main() async {
   // Открываем коробки
   await Hive.openBox<RoutePoint>('active_route');
   await Hive.openBox<RunSession>('run_sessions');
+  
+  // Инициализируем API (создаёт device_id)
+  final apiService = ApiService();
+  await apiService.init();
   
   runApp(const RunGuideApp());
 }

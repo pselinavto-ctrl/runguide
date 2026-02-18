@@ -13,6 +13,7 @@ dependencies:
   # Карта
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
+  flutter_map_tile_caching: ^9.0.0  # Добавлена новая зависимость
   
   # GPS
   geolocator: ^13.0.2
@@ -20,7 +21,7 @@ dependencies:
   # Локальная БД
   hive: ^2.2.3
   hive_flutter: ^1.1.0
-  path_provider: ^2.1.5
+  path_provider: ^2.1.5  # Уже была, но обновлена до версии из требований
   
   # HTTP запросы
   http: ^1.2.2

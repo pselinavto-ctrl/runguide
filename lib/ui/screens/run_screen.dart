@@ -53,25 +53,18 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   
   bool _gpsDialogShown = false;
   
-  // API и POI
-  List<Poi> _nearbyPois = [];
-  Set<int> _visitedPoiIds = {};  // Уже озвученные POI
-  Timer? _poiCheckTimer;
-  Timer? _generalFactTimer;
-  DateTime? _lastPoiCheck;
-  DateTime? _lastGeneralFact;
+  // OSM POI
+  List<OsmPoi> _nearbyPois = [];
+  Set<int> _visitedOsmIds = {};  // Уже озвученные POI (по osm_id)
+  Timer? _factTimer;             // Единый таймер для всех фактов
+  DateTime? _lastFactTime;
+  bool _isSpeaking = false;      // Флаг: сейчас говорит
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    // Устанавливаем колбэк для автоматического определения включения GPS
     _locationService.onGpsEnabled = _onGpsAutoEnabled;
-    
-    // Генерируем уникальный ID устройства
-    _apiService.setDeviceId('device_${DateTime.now().millisecondsSinceEpoch}');
-    
     _initApp();
   }
 
@@ -79,6 +72,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     await _repository.init();
     await _ttsService.init();
     await bg.initBackgroundService();
+    await _apiService.init(); // Инициализация API + загрузка user_id
     
     final hasPermission = await _locationService.checkPermission();
     if (!hasPermission) {
@@ -100,27 +94,20 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         _state = RunState.ready;
       });
       _mapController.move(_filteredPosition!, 16);
-      
-      // Определяем город при старте
       _detectCity(position.latitude, position.longitude);
     }
   }
 
-  /// Определение города по координатам
   Future<void> _detectCity(double lat, double lon) async {
     final city = await _apiService.getCity(lat, lon);
     if (city != null) {
       print('🏙️ Город определён: ${city.name}');
       _apiService.setCityId(city.id);
-    } else {
-      print('🏙️ Город не определён, используем общие факты');
     }
   }
 
-  /// Вызывается автоматически когда GPS включается
   void _onGpsAutoEnabled() {
     if (!mounted) return;
-    
     setState(() => _state = RunState.searchingGps);
     
     _locationService.getCurrentPosition().then((position) {
@@ -131,8 +118,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           _state = RunState.ready;
         });
         _mapController.move(_filteredPosition!, 16);
-        
-        // Определяем город
         _detectCity(position.latitude, position.longitude);
         
         ScaffoldMessenger.of(context).showSnackBar(
@@ -163,7 +148,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           'Для работы приложения необходима геолокация.\n\n'
           '1. Нажмите "Открыть настройки"\n'
           '2. Включите геолокацию\n'
-          '3. Вернитесь в приложение - GPS определится автоматически',
+          '3. Вернитесь в приложение',
         ),
         actions: [
           TextButton(
@@ -182,9 +167,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.deepPurple,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             child: const Text('Проверить GPS'),
           ),
@@ -195,14 +178,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      if (_state == RunState.searchingGps) {
-        _checkGpsAndRetry();
-      }
-    } else if (state == AppLifecycleState.paused) {
-      if (_state == RunState.searchingGps && !_locationService.isWaitingForGps) {
-        _locationService.startGpsCheckLoop();
-      }
+    if (state == AppLifecycleState.resumed && _state == RunState.searchingGps) {
+      _checkGpsAndRetry();
+    } else if (state == AppLifecycleState.paused && 
+               _state == RunState.searchingGps && 
+               !_locationService.isWaitingForGps) {
+      _locationService.startGpsCheckLoop();
     }
   }
 
@@ -211,7 +192,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     
     if (serviceEnabled) {
       _locationService.stopGpsCheckLoop();
-      
       setState(() => _state = RunState.searchingGps);
       
       final position = await _locationService.getCurrentPosition();
@@ -222,7 +202,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           _state = RunState.ready;
         });
         _mapController.move(_filteredPosition!, 16);
-        
         _detectCity(position.latitude, position.longitude);
       }
     } else {
@@ -239,8 +218,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     _runTimer?.cancel();
     _positionSubscription?.cancel();
     _countdownTimer?.cancel();
-    _poiCheckTimer?.cancel();
-    _generalFactTimer?.cancel();
+    _factTimer?.cancel();
     _locationService.dispose();
     _apiService.dispose();
     _ttsService.dispose();
@@ -251,8 +229,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   void _startCountdown() {
     setState(() { _state = RunState.countdown; _countdown = 3; });
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_countdown > 0) { setState(() => _countdown--); } 
-      else { timer.cancel(); _startRun(); }
+      if (_countdown > 0) {
+        setState(() => _countdown--);
+      } else {
+        timer.cancel();
+        _startRun();
+      }
     });
   }
 
@@ -264,7 +246,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _elapsedTime = Duration.zero;
       _factsCount = 0;
       _kalman.reset();
-      _visitedPoiIds.clear();
+      _visitedOsmIds.clear();
+      _isSpeaking = false;
     });
     
     await bg.startService();
@@ -277,11 +260,13 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       }
     });
     
-    // Запускаем проверку POI
-    _startPoiChecking();
+    // Запускаем единый таймер фактов (каждые 2 минуты)
+    _startFactTimer();
     
-    // Запускаем периодические общие факты
-    _startGeneralFactTimer();
+    // Загружаем POI при старте
+    if (_filteredPosition != null) {
+      _loadNearbyPois(_filteredPosition!.latitude, _filteredPosition!.longitude);
+    }
     
     await _ttsService.speak('Тренировка началась. Приятного бега!');
     
@@ -295,110 +280,142 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Запуск периодической проверки POI
-  void _startPoiChecking() {
-    _lastPoiCheck = DateTime.now();
+  /// Загрузить POI из OpenStreetMap
+  Future<void> _loadNearbyPois(double lat, double lon) async {
+    print('🗺️ Загрузка OSM POI: lat=$lat, lon=$lon');
     
-    _poiCheckTimer = Timer.periodic(
-      Duration(seconds: (AppConstants.poiCheckIntervalSeconds).toInt()),
+    final pois = await _apiService.getOsmPois(lat, lon, radius: AppConstants.poiRadius);
+    
+    if (pois.isNotEmpty) {
+      // Сортируем по расстоянию
+      pois.sort((a, b) => a.distance.compareTo(b.distance));
+      
+      setState(() {
+        _nearbyPois = pois;
+      });
+      
+      print('✅ OSM POI загружено: ${pois.length}');
+      
+      // Выводим топ-5 ближайших POI
+      for (int i = 0; i < pois.length && i < 5; i++) {
+        final poi = pois[i];
+        print('📍 POI #$i: ${poi.name} (${poi.distance}м, категория: ${poi.category})');
+      }
+    } else {
+      print('⚠️ OSM POI не найдены');
+    }
+  }
+
+  /// Единый таймер для всех фактов (каждые 2 минуты)
+  void _startFactTimer() {
+    _lastFactTime = DateTime.now();
+    
+    _factTimer = Timer.periodic(
+      Duration(minutes: AppConstants.generalFactIntervalMinutes.toInt()),
       (_) async {
-        if (_state != RunState.running || _filteredPosition == null) return;
+        if (_state != RunState.running || _isSpeaking) return;
         
-        // Обновляем список POI рядом
-        _nearbyPois = await _apiService.getNearbyPois(
-          _filteredPosition!.latitude,
-          _filteredPosition!.longitude,
-          radius: 200,  // Ищем в радиусе 200 метров
-        );
-        
-        // Проверяем, не подошли ли мы к какому-то POI
-        for (final poi in _nearbyPois) {
-          if (poi.inRange && !_visitedPoiIds.contains(poi.id)) {
-            _visitedPoiIds.add(poi.id);
-            await _speakPoiFact(poi);
-            break;  // Озвучиваем только один POI за раз
-          }
-        }
+        await _speakNextFact();
       },
     );
   }
 
-  /// Озвучить факт о POI (через DeepSeek для уникальности)
-  Future<void> _speakPoiFact(Poi poi) async {
-    // Сначала пробуем DeepSeek
-    String? factText = await _apiService.getGeneratedFact(
-      type: 'poi',
-      poiId: poi.id,
+  /// Озвучить следующий факт (POI или общий)
+  Future<void> _speakNextFact() async {
+    if (_isSpeaking) return;
+    _isSpeaking = true;
+    
+    try {
+      // 1. Ищем ближайший POI в радиусе срабатывания
+      OsmPoi? nearestPoi;
+      double minDistance = AppConstants.poiTriggerRadius.toDouble();
+      
+      for (final poi in _nearbyPois) {
+        if (_visitedOsmIds.contains(poi.osmId)) continue;
+        
+        if (_filteredPosition != null) {
+          final distance = Geolocator.distanceBetween(
+            _filteredPosition!.latitude,
+            _filteredPosition!.longitude,
+            poi.lat,
+            poi.lon,
+          );
+          
+          if (distance < minDistance) {
+            minDistance = distance;
+            nearestPoi = poi;
+          }
+        }
+      }
+      
+      // 2. Если нашли POI рядом - озвучиваем POI-факт
+      if (nearestPoi != null) {
+        await _speakOsmPoiFact(nearestPoi);
+      } else {
+        // 3. Иначе озвучиваем общий факт
+        await _speakGeneralFact();
+      }
+    } finally {
+      _isSpeaking = false;
+    }
+  }
+
+  /// Озвучить факт о POI из OSM (через DeepSeek)
+  Future<void> _speakOsmPoiFact(OsmPoi poi) async {
+    print('🎯 Озвучиваем POI: ${poi.name} (категория: ${poi.category})');
+    
+    // Запрашиваем факт у DeepSeek
+    final factText = await _apiService.getOsmPoiFact(
+      osmId: poi.osmId,
+      poiName: poi.name,
+      category: poi.category,
     );
     
-    // Если DeepSeek не сработал - берём из базы
-    if (factText == null) {
-      final fact = await _apiService.getPoiFact(poi.id);
-      factText = fact?.text;
-    }
-    
     if (factText != null) {
-      setState(() => _factsCount++);
+      setState(() {
+        _factsCount++;
+        _visitedOsmIds.add(poi.osmId);
+      });
       
-      // Сначала говорим название
+      // Говорим название
       await _ttsService.speak(poi.name);
       await Future.delayed(const Duration(milliseconds: 500));
       
-      // Потом факт
+      // Говорим факт
       await _ttsService.speak(factText);
       
-      // Сохраняем посещение
-      _apiService.saveVisit(poi.id, null);
-      
-      print('🎯 Озвучен POI: ${poi.name}');
+      print('✅ POI озвучен: ${poi.name}');
+    } else {
+      print('❌ Не удалось получить факт для POI: ${poi.name}');
     }
   }
 
-  /// Запуск таймера общих фактов
-  void _startGeneralFactTimer() {
-    _lastGeneralFact = DateTime.now();
-    
-    _generalFactTimer = Timer.periodic(
-      Duration(minutes: AppConstants.generalFactIntervalMinutes.toInt()),
-      (_) async {
-        if (_state != RunState.running) return;
-        
-        await _speakGeneralFact();
-      },
-    );
-  }
-
-  /// Озвучить общий факт (через DeepSeek для уникальности)
+  /// Озвучить общий факт (через DeepSeek)
   Future<void> _speakGeneralFact() async {
+    print('📢 Озвучиваем общий факт');
+    
     // Чередуем категории
     final categories = ['sport', 'science', 'general'];
     final category = categories[_factsCount % categories.length];
     
-    // Сначала пробуем DeepSeek для уникального факта
-    String? factText = await _apiService.getGeneratedFact(
+    final factText = await _apiService.getGeneratedFact(
       type: 'general',
       category: category,
-      cityName: 'Ростов-на-Дону',
     );
-    
-    // Если DeepSeek не сработал - берём из базы
-    if (factText == null) {
-      final fact = await _apiService.getGeneralFact(category: category);
-      factText = fact?.text;
-    }
     
     if (factText != null) {
       setState(() => _factsCount++);
       await _ttsService.speak(factText);
-      print('📢 Озвучен факт: $factText');
+      print('✅ Общий факт озвучен: $factText');
+    } else {
+      print('❌ Не удалось получить общий факт');
     }
   }
 
   void _pauseRun() {
     _runTimer?.cancel();
     _positionSubscription?.pause();
-    _poiCheckTimer?.cancel();
-    _generalFactTimer?.cancel();
+    _factTimer?.cancel();
     setState(() => _state = RunState.paused);
     _ttsService.speak('Тренировка на паузе');
   }
@@ -410,8 +427,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       }
     });
     _positionSubscription?.resume();
-    _startPoiChecking();
-    _startGeneralFactTimer();
+    _startFactTimer();
     setState(() => _state = RunState.running);
     _ttsService.speak('Продолжаем');
   }
@@ -419,8 +435,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Future<void> _stopRun() async {
     _runTimer?.cancel();
     _positionSubscription?.cancel();
-    _poiCheckTimer?.cancel();
-    _generalFactTimer?.cancel();
+    _factTimer?.cancel();
     await bg.stopService();
     
     final session = RunSession(
@@ -434,7 +449,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     );
     
     await _repository.saveSession(session);
-    await _ttsService.speak('Тренировка окончена. Дистанция: ${(_totalDistance / 1000).toStringAsFixed(2)} километра. Услышано фактов: $_factsCount');
+    await _ttsService.speak(
+      'Тренировка окончена. '
+      'Дистанция: ${(_totalDistance / 1000).toStringAsFixed(2)} километра. '
+      'Услышано фактов: $_factsCount'
+    );
     
     if (mounted) {
       Navigator.of(context).pushReplacement(
@@ -453,13 +472,15 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _elapsedTime = Duration.zero;
       _factsCount = 0;
       _kalman.reset();
-      _visitedPoiIds.clear();
+      _visitedOsmIds.clear();
+      _nearbyPois.clear();
     });
     _repository.clearActiveRoute();
   }
 
   void _onPositionUpdate(FilteredPosition data) {
     if (_state != RunState.running || data.isJump) return;
+    
     setState(() {
       _currentPosition = data.raw;
       _filteredPosition = data.filtered;
@@ -471,6 +492,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         speed: data.raw.speed
       ));
     });
+    
     if (_route.length >= 2) {
       final last = _route[_route.length - 2];
       final distance = Geolocator.distanceBetween(
@@ -479,11 +501,20 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       );
       setState(() => _totalDistance += distance);
     }
+    
     if (_followUser) _moveCamera(data.filtered, data.raw.speed);
+    
+    // Периодически обновляем POI (каждые 30 секунд)
+    final now = DateTime.now();
+    if (_lastFactTime != null && now.difference(_lastFactTime!).inSeconds > 30) {
+      _loadNearbyPois(data.filtered.latitude, data.filtered.longitude);
+      _lastFactTime = now;
+    }
   }
 
   void _onBackgroundLocation(dynamic data) {
     if (!mounted || data['lat'] == null) return;
+    
     final lat = data['lat'] as double;
     final lon = data['lon'] as double;
     final speed = (data['speed'] as num?)?.toDouble() ?? 0.0;
@@ -492,7 +523,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         ? now.difference(_lastKalmanTime!).inMilliseconds / 1000.0
         : 1.0;
     _lastKalmanTime = now;
+    
     final filtered = _kalman.process(lat, lon, 10.0, dt);
+    
     setState(() {
       _filteredPosition = filtered;
       _heading = _kalman.heading;
@@ -542,10 +575,14 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       body: Stack(
         children: [
           _buildMap(),
-          if (_state == RunState.running || _state == RunState.paused) _buildStatsPanel(),
-          if (_state == RunState.searchingGps) _buildGpsIndicator(),
-          if (_state == RunState.ready) _buildReadyIndicator(),
-          if (_state == RunState.countdown) _buildCountdown(),
+          if (_state == RunState.running || _state == RunState.paused) 
+            _buildStatsPanel(),
+          if (_state == RunState.searchingGps) 
+            _buildGpsIndicator(),
+          if (_state == RunState.ready) 
+            _buildReadyIndicator(),
+          if (_state == RunState.countdown) 
+            _buildCountdown(),
           _buildControlButtons(),
         ],
       ),
@@ -561,7 +598,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       ),
       children: [
         TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/  {z}/{x}/{y}.png',
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.runguide.app',
         ),
         if (_route.isNotEmpty)
@@ -580,7 +617,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               ),
             ],
           ),
-        // Показываем POI на карте
+        // Показываем OSM POI на карте
         if (_nearbyPois.isNotEmpty)
           MarkerLayer(
             markers: _nearbyPois.map((poi) => Marker(
@@ -589,7 +626,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               height: 30,
               child: Icon(
                 Icons.location_on,
-                color: _visitedPoiIds.contains(poi.id) ? Colors.grey : Colors.red,
+                color: _visitedOsmIds.contains(poi.osmId) ? Colors.grey : Colors.red,
                 size: 30,
               ),
             )).toList(),
