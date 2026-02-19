@@ -11,9 +11,9 @@ dependencies:
     sdk: flutter
   
   # Карта
-  flutter_map: ^7.0.2
+  flutter_map: ^8.2.2                     # обновлено с 7.0.2 на 8.2.2
   latlong2: ^0.9.1
-  flutter_map_tile_caching: ^9.0.0  # Добавлена новая зависимость
+  flutter_map_tile_caching: ^10.1.1       # оставлено
   
   # GPS
   geolocator: ^13.0.2
@@ -21,7 +21,7 @@ dependencies:
   # Локальная БД
   hive: ^2.2.3
   hive_flutter: ^1.1.0
-  path_provider: ^2.1.5  # Уже была, но обновлена до версии из требований
+  path_provider: ^2.1.5
   
   # HTTP запросы
   http: ^1.2.2

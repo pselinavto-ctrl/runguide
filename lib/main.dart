@@ -1,28 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'data/models/route_point.dart';
 import 'data/models/run_session.dart';
-import 'services/api_service.dart'; // ИСПРАВЛЕНО: убрано data/
+import 'services/api_service.dart';
+import 'services/map_cache_service.dart';
 import 'ui/screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Инициализация Hive
+
   await Hive.initFlutter();
-  
-  // Регистрируем адаптеры (только для моделей, которые храним локально)
   Hive.registerAdapter(RoutePointAdapter());
   Hive.registerAdapter(RunSessionAdapter());
-  
-  // Открываем коробки
   await Hive.openBox<RoutePoint>('active_route');
   await Hive.openBox<RunSession>('run_sessions');
-  
-  // Инициализируем API (создаёт device_id)
+
+  await MapCacheService.init();
+
   final apiService = ApiService();
   await apiService.init();
-  
+
   runApp(const RunGuideApp());
 }
 
