@@ -28,13 +28,14 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
   late Animation<double> _pulseAnimation;
 
   double _progress = 0.0;
-  String _statusText = 'Определение местоположения...';
+  String _statusText = 'Проверка подключения...';
   bool _isComplete = false;
   bool _hasError = false;
   String _errorMessage = '';
 
   StreamSubscription<DownloadProgress>? _subscription;
   bool _isCancelled = false;
+  bool _isCancelling = false;
   Position? _currentPosition;
 
   @override
@@ -62,6 +63,31 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
 
   Future<void> _startDownload() async {
     try {
+      // Проверяем интернет
+      setState(() {
+        _statusText = 'Проверка подключения...';
+      });
+
+      final hasInternet = await MapCacheService.hasInternetConnection();
+      if (!hasInternet) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = 'Нет подключения к интернету.\nПодключитесь к Wi-Fi или мобильной сети.';
+          _statusText = 'Нет интернета';
+        });
+        return;
+      }
+
+      // Проверяем, не идёт ли уже скачивание
+      if (MapCacheService.isDownloading) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = 'Скачивание уже выполняется в другом окне.';
+          _statusText = 'Уже скачивается';
+        });
+        return;
+      }
+
       setState(() {
         _statusText = 'Определение местоположения...';
       });
@@ -88,19 +114,19 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
           if (_isCancelled || !mounted) return;
 
           setState(() {
-            // percentageProgress возвращает 0-100, нормализуем до 0-1
             _progress = event.percentageProgress / 100;
 
-            // Проверяем завершение по remainingTilesCount или percentageProgress
             final isComplete = event.remainingTilesCount == 0 || 
                               event.percentageProgress >= 100;
 
             if (isComplete) {
               _isComplete = true;
               _statusText = 'Загрузка завершена!';
+              _pulseController.stop();
             } else {
               final percent = event.percentageProgress.toStringAsFixed(0);
-              _statusText = 'Загрузка карты: $percent%';
+              final remaining = event.remainingTilesCount;
+              _statusText = 'Загрузка: $percent% (осталось $remaining тайлов)';
             }
           });
         },
@@ -108,137 +134,195 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
           if (!mounted) return;
           setState(() {
             _hasError = true;
-            _errorMessage = error.toString();
+            _errorMessage = _formatError(error);
             _statusText = 'Ошибка загрузки';
+            _pulseController.stop();
           });
         },
         onDone: () {
           if (!mounted) return;
-          setState(() {
-            _isComplete = true;
-            _progress = 1.0;
-            _statusText = 'Загрузка завершена!';
-          });
+          if (!_isComplete && !_hasError && !_isCancelled) {
+            setState(() {
+              _isComplete = true;
+              _progress = 1.0;
+              _statusText = 'Загрузка завершена!';
+            });
+          }
         },
       );
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _hasError = true;
-        _errorMessage = e.toString();
+        _errorMessage = _formatError(e);
         _statusText = 'Ошибка';
+        _pulseController.stop();
       });
     }
   }
 
+  String _formatError(dynamic error) {
+    final errorStr = error.toString();
+    
+    if (errorStr.contains('SocketException') || errorStr.contains('Connection failed')) {
+      return 'Потеряно соединение с интернетом.\nПроверьте подключение и попробуйте снова.';
+    }
+    if (errorStr.contains('Скачивание уже идёт')) {
+      return 'Скачивание уже выполняется.\nДождитесь завершения или перезапустите приложение.';
+    }
+    if (errorStr.contains('timeout')) {
+      return 'Сервер карт не отвечает.\nПопробуйте позже.';
+    }
+    
+    return 'Ошибка: $errorStr';
+  }
+
   Future<void> _cancelDownload() async {
+    if (_isCancelling) return;
+    
+    setState(() {
+      _isCancelling = true;
+      _statusText = 'Отмена загрузки...';
+    });
+
     _isCancelled = true;
     await _subscription?.cancel();
+    await MapCacheService.cancelDownload();
+    
+    if (mounted) {
+      Navigator.of(context).pop(false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(24),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Colors.deepPurple.shade50, Colors.white],
-          ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildAnimatedIcon(),
-            const SizedBox(height: 24),
-            Text(
-              _isComplete ? 'Готово!' : _hasError ? 'Ошибка' : 'Загрузка карты',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: _hasError ? Colors.red : Colors.deepPurple,
-              ),
+    return WillPopScope(
+      onWillPop: () async {
+        // Блокируем закрытие кнопкой назад во время скачивания
+        if (!_isComplete && !_hasError && !_isCancelling) {
+          return false;
+        }
+        return true;
+      },
+      child: Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Colors.deepPurple.shade50, Colors.white],
             ),
-            const SizedBox(height: 8),
-            Text(_statusText,
-                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-                textAlign: TextAlign.center),
-            const SizedBox(height: 24),
-            if (!_isComplete && !_hasError) _buildProgressBar(),
-            if (_isComplete) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.green.shade200),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.check_circle, color: Colors.green.shade600, size: 20),
-                    const SizedBox(width: 8),
-                    Text('${widget.radiusKm.toInt()} × ${widget.radiusKm.toInt()} км загружено',
-                        style: TextStyle(
-                            color: Colors.green.shade700,
-                            fontWeight: FontWeight.w500)),
-                  ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildAnimatedIcon(),
+              const SizedBox(height: 24),
+              Text(
+                _isComplete ? 'Готово!' : _hasError ? 'Ошибка' : 'Загрузка карты',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: _hasError ? Colors.red : Colors.deepPurple,
                 ),
               ),
               const SizedBox(height: 8),
-              Text('Теперь карта работает без интернета!',
+              Text(
+                _statusText,
+                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              if (!_isComplete && !_hasError) _buildProgressBar(),
+              if (_isComplete) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.green.shade200),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.green.shade600, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${widget.radiusKm.toInt()} × ${widget.radiusKm.toInt()} км загружено',
+                        style: TextStyle(
+                          color: Colors.green.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Теперь карта работает без интернета!',
                   style: TextStyle(
-                      fontSize: 13,
-                      color: Colors.grey.shade600,
-                      fontStyle: FontStyle.italic)),
-            ],
-            if (_hasError) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
+                    fontSize: 13,
+                    color: Colors.grey.shade600,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+              if (_hasError) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
                     color: Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(12)),
-                child: Text(_errorMessage,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _errorMessage,
                     style: TextStyle(fontSize: 12, color: Colors.red.shade700),
-                    textAlign: TextAlign.center),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (!_isComplete && !_hasError)
+                    TextButton.icon(
+                      onPressed: _isCancelling ? null : _cancelDownload,
+                      icon: _isCancelling 
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.close),
+                      label: Text(_isCancelling ? 'Отмена...' : 'Отмена'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.grey.shade600,
+                      ),
+                    ),
+                  if (_isComplete || _hasError)
+                    ElevatedButton.icon(
+                      onPressed: () => Navigator.of(context).pop(_isComplete),
+                      icon: Icon(_isComplete ? Icons.check : Icons.refresh),
+                      label: Text(_isComplete ? 'Готово' : 'Закрыть'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _isComplete ? Colors.green : Colors.red,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ],
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (!_isComplete && !_hasError)
-                  TextButton.icon(
-                    onPressed: () {
-                      _cancelDownload();
-                      Navigator.of(context).pop(false);
-                    },
-                    icon: const Icon(Icons.close),
-                    label: const Text('Отмена'),
-                    style: TextButton.styleFrom(foregroundColor: Colors.grey.shade600),
-                  ),
-                if (_isComplete || _hasError)
-                  ElevatedButton.icon(
-                    onPressed: () => Navigator.of(context).pop(_isComplete),
-                    icon: Icon(_isComplete ? Icons.check : Icons.refresh),
-                    label: Text(_isComplete ? 'Готово' : 'Закрыть'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _isComplete ? Colors.green : Colors.red,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -250,7 +334,9 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
         width: 80,
         height: 80,
         decoration: BoxDecoration(
-            color: Colors.green.shade100, shape: BoxShape.circle),
+          color: Colors.green.shade100,
+          shape: BoxShape.circle,
+        ),
         child: Icon(Icons.download_done, size: 40, color: Colors.green.shade600),
       );
     }
@@ -258,8 +344,10 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
       return Container(
         width: 80,
         height: 80,
-        decoration:
-            BoxDecoration(color: Colors.red.shade100, shape: BoxShape.circle),
+        decoration: BoxDecoration(
+          color: Colors.red.shade100,
+          shape: BoxShape.circle,
+        ),
         child: Icon(Icons.error_outline, size: 40, color: Colors.red.shade600),
       );
     }
@@ -272,13 +360,15 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
           height: 80,
           decoration: BoxDecoration(
             gradient: RadialGradient(
-                colors: [Colors.deepPurple.shade200, Colors.deepPurple.shade400]),
+              colors: [Colors.deepPurple.shade200, Colors.deepPurple.shade400],
+            ),
             shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
-                  color: Colors.deepPurple.withOpacity(0.3),
-                  blurRadius: 20,
-                  spreadRadius: 5)
+                color: Colors.deepPurple.withOpacity(0.3),
+                blurRadius: 20,
+                spreadRadius: 5,
+              ),
             ],
           ),
           child: Stack(
@@ -312,20 +402,26 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
             minHeight: 8,
             backgroundColor: Colors.grey.shade200,
             valueColor: AlwaysStoppedAnimation<Color>(
-                Color.lerp(Colors.orange, Colors.green, _progress)!),
+              Color.lerp(Colors.orange, Colors.green, _progress)!,
+            ),
           ),
         ),
         const SizedBox(height: 8),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Офлайн-карта',
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
-            Text('${(_progress * 100).toStringAsFixed(0)}%',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.deepPurple)),
+            Text(
+              'Офлайн-карта',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+            ),
+            Text(
+              '${(_progress * 100).toStringAsFixed(0)}%',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Colors.deepPurple,
+              ),
+            ),
           ],
         ),
       ],

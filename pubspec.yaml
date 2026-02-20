@@ -40,6 +40,9 @@ dependencies:
   
   # Иконки
   cupertino_icons: ^1.0.8
+  
+  # Проверка подключения к интернету
+  connectivity_plus: ^5.0.2
 
 dev_dependencies:
   flutter_test:

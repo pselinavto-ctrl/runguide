@@ -3,14 +3,19 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class MapCacheService {
   static const String storeName = 'runguide_map_cache';
 
   static final TileLayer _tileLayer = TileLayer(
     urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    userAgentPackageName: 'com.example.runguide',
+    userAgentPackageName: 'com.runguide.runguide',
   );
+
+  // Состояние скачивания
+  static bool _isDownloading = false;
+  static bool get isDownloading => _isDownloading;
 
   static Future<void> init() async {
     try {
@@ -51,12 +56,27 @@ class MapCacheService {
     return stats.tilesCount > 0;
   }
 
+  /// Проверка подключения к интернету
+  static Future<bool> hasInternetConnection() async {
+    final connectivity = await Connectivity().checkConnectivity();
+    if (connectivity == ConnectivityResult.none) {
+      return false;
+    }
+    return true;
+  }
+
   static Stream<DownloadProgress> downloadArea(
     Position position, {
     double radiusKm = 15.0,
     int minZoom = 10,
     int maxZoom = 17,
   }) {
+    if (_isDownloading) {
+      throw Exception('Скачивание уже идёт');
+    }
+
+    _isDownloading = true;
+
     final radiusDegrees = radiusKm / 111.0;
     final bounds = LatLngBounds(
       LatLng(position.latitude - radiusDegrees, position.longitude - radiusDegrees),
@@ -74,7 +94,26 @@ class MapCacheService {
       region: downloadableRegion,
     );
     
+    // Сбрасываем флаг при завершении
+    result.downloadProgress.listen(
+      (event) {},
+      onDone: () => _isDownloading = false,
+      onError: (_) => _isDownloading = false,
+    );
+    
     return result.downloadProgress;
+  }
+
+  /// Отмена текущего скачивания
+  static Future<void> cancelDownload() async {
+    try {
+      await FMTCStore(storeName).download.cancel();
+      _isDownloading = false;
+      debugPrint('⛔ Скачивание отменено');
+    } catch (e) {
+      debugPrint('❌ Ошибка отмены: $e');
+      _isDownloading = false;
+    }
   }
 
   static Future<void> clearCache() async {
