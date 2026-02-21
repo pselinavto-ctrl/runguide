@@ -11,6 +11,8 @@ import '../../services/tts_service.dart';
 import '../../services/background_service.dart' as bg;
 import '../../services/run_repository.dart';
 import '../../services/api_service.dart';
+import '../../services/map_cache_service.dart';        // <-- добавлено
+import '../../services/map_cache_dialog.dart';        // <-- добавлено
 import '../../data/models/route_point.dart';
 import '../../data/models/run_session.dart';
 import '../../data/models/poi.dart';
@@ -31,34 +33,37 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   final TtsService _ttsService = TtsService();
   final RunRepository _repository = RunRepository();
   final ApiService _apiService = ApiService();
-  
+
   RunState _state = RunState.initializing;
   Position? _currentPosition;
   LatLng? _filteredPosition;
   double _heading = 0.0;
-  
+
   final List<RoutePoint> _route = [];
   double _totalDistance = 0.0;
   Duration _elapsedTime = Duration.zero;
   int _factsCount = 0;
-  
+
   Timer? _runTimer;
   StreamSubscription? _positionSubscription;
   Timer? _countdownTimer;
   int _countdown = 3;
-  
+
   final KalmanFilter _kalman = KalmanFilter();
   DateTime? _lastKalmanTime;
   bool _followUser = true;
-  
+
   bool _gpsDialogShown = false;
-  
+
   // OSM POI
   List<OsmPoi> _nearbyPois = [];
-  Set<int> _visitedOsmIds = {};  // Уже озвученные POI (по osm_id)
-  Timer? _factTimer;             // Единый таймер для всех фактов
+  Set<int> _visitedOsmIds = {};
+  Timer? _factTimer;
   DateTime? _lastFactTime;
-  bool _isSpeaking = false;      // Флаг: сейчас говорит
+  bool _isSpeaking = false;
+
+  // Кэш карты
+  bool _hasCache = false;                 // <-- добавлено
 
   @override
   void initState() {
@@ -72,8 +77,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     await _repository.init();
     await _ttsService.init();
     await bg.initBackgroundService();
-    await _apiService.init(); // Инициализация API + загрузка user_id
-    
+    await _apiService.init();
+
     final hasPermission = await _locationService.checkPermission();
     if (!hasPermission) {
       setState(() => _state = RunState.searchingGps);
@@ -83,9 +88,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       }
       return;
     }
-    
+
     setState(() => _state = RunState.searchingGps);
-    
+
     final position = await _locationService.getCurrentPosition();
     if (position != null && mounted) {
       setState(() {
@@ -95,6 +100,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       });
       _mapController.move(_filteredPosition!, 16);
       _detectCity(position.latitude, position.longitude);
+      _checkCache();                       // <-- добавлено
     }
   }
 
@@ -106,10 +112,23 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _checkCache() async {       // <-- добавлено
+    try {
+      final hasTiles = await MapCacheService.hasCache();
+      if (mounted) {
+        setState(() {
+          _hasCache = hasTiles;
+        });
+      }
+    } catch (e) {
+      debugPrint('⚠️ Cache check: $e');
+    }
+  }
+
   void _onGpsAutoEnabled() {
     if (!mounted) return;
     setState(() => _state = RunState.searchingGps);
-    
+
     _locationService.getCurrentPosition().then((position) {
       if (position != null && mounted) {
         setState(() {
@@ -119,7 +138,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         });
         _mapController.move(_filteredPosition!, 16);
         _detectCity(position.latitude, position.longitude);
-        
+        _checkCache();
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('GPS определён! Готов к старту.'),
@@ -180,20 +200,20 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _state == RunState.searchingGps) {
       _checkGpsAndRetry();
-    } else if (state == AppLifecycleState.paused && 
-               _state == RunState.searchingGps && 
-               !_locationService.isWaitingForGps) {
+    } else if (state == AppLifecycleState.paused &&
+        _state == RunState.searchingGps &&
+        !_locationService.isWaitingForGps) {
       _locationService.startGpsCheckLoop();
     }
   }
 
   Future<void> _checkGpsAndRetry() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    
+
     if (serviceEnabled) {
       _locationService.stopGpsCheckLoop();
       setState(() => _state = RunState.searchingGps);
-      
+
       final position = await _locationService.getCurrentPosition();
       if (position != null && mounted) {
         setState(() {
@@ -203,6 +223,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         });
         _mapController.move(_filteredPosition!, 16);
         _detectCity(position.latitude, position.longitude);
+        _checkCache();
       }
     } else {
       _locationService.startGpsCheckLoop();
@@ -227,7 +248,10 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   }
 
   void _startCountdown() {
-    setState(() { _state = RunState.countdown; _countdown = 3; });
+    setState(() {
+      _state = RunState.countdown;
+      _countdown = 3;
+    });
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_countdown > 0) {
         setState(() => _countdown--);
@@ -249,54 +273,48 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _visitedOsmIds.clear();
       _isSpeaking = false;
     });
-    
+
     await bg.startService();
     _positionSubscription = _locationService.getPositionStream().listen(_onPositionUpdate);
     FlutterBackgroundService().on('locationUpdate').listen(_onBackgroundLocation);
-    
+
     _runTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _state == RunState.running) {
         setState(() => _elapsedTime += const Duration(seconds: 1));
       }
     });
-    
-    // Запускаем единый таймер фактов (каждые 2 минуты)
+
     _startFactTimer();
-    
-    // Загружаем POI при старте
+
     if (_filteredPosition != null) {
       _loadNearbyPois(_filteredPosition!.latitude, _filteredPosition!.longitude);
     }
-    
+
     await _ttsService.speak('Тренировка началась. Приятного бега!');
-    
+
     if (_filteredPosition != null) {
       _route.add(RoutePoint(
         lat: _filteredPosition!.latitude,
         lon: _filteredPosition!.longitude,
         timestamp: DateTime.now(),
-        speed: 0
+        speed: 0,
       ));
     }
   }
 
-  /// Загрузить POI из OpenStreetMap
   Future<void> _loadNearbyPois(double lat, double lon) async {
     print('🗺️ Загрузка OSM POI: lat=$lat, lon=$lon');
-    
+
     final pois = await _apiService.getOsmPois(lat, lon, radius: AppConstants.poiRadius);
-    
+
     if (pois.isNotEmpty) {
-      // Сортируем по расстоянию
       pois.sort((a, b) => a.distance.compareTo(b.distance));
-      
+
       setState(() {
         _nearbyPois = pois;
       });
-      
+
       print('✅ OSM POI загружено: ${pois.length}');
-      
-      // Выводим топ-5 ближайших POI
       for (int i = 0; i < pois.length && i < 5; i++) {
         final poi = pois[i];
         print('📍 POI #$i: ${poi.name} (${poi.distance}м, категория: ${poi.category})');
@@ -306,33 +324,30 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Единый таймер для всех фактов (каждые 2 минуты)
   void _startFactTimer() {
     _lastFactTime = DateTime.now();
-    
+
     _factTimer = Timer.periodic(
       Duration(minutes: AppConstants.generalFactIntervalMinutes.toInt()),
       (_) async {
         if (_state != RunState.running || _isSpeaking) return;
-        
+
         await _speakNextFact();
       },
     );
   }
 
-  /// Озвучить следующий факт (POI или общий)
   Future<void> _speakNextFact() async {
     if (_isSpeaking) return;
     _isSpeaking = true;
-    
+
     try {
-      // 1. Ищем ближайший POI в радиусе срабатывания
       OsmPoi? nearestPoi;
       double minDistance = AppConstants.poiTriggerRadius.toDouble();
-      
+
       for (final poi in _nearbyPois) {
         if (_visitedOsmIds.contains(poi.osmId)) continue;
-        
+
         if (_filteredPosition != null) {
           final distance = Geolocator.distanceBetween(
             _filteredPosition!.latitude,
@@ -340,19 +355,17 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
             poi.lat,
             poi.lon,
           );
-          
+
           if (distance < minDistance) {
             minDistance = distance;
             nearestPoi = poi;
           }
         }
       }
-      
-      // 2. Если нашли POI рядом - озвучиваем POI-факт
+
       if (nearestPoi != null) {
         await _speakOsmPoiFact(nearestPoi);
       } else {
-        // 3. Иначе озвучиваем общий факт
         await _speakGeneralFact();
       }
     } finally {
@@ -360,49 +373,42 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Озвучить факт о POI из OSM (через DeepSeek)
   Future<void> _speakOsmPoiFact(OsmPoi poi) async {
     print('🎯 Озвучиваем POI: ${poi.name} (категория: ${poi.category})');
-    
-    // Запрашиваем факт у DeepSeek
+
     final factText = await _apiService.getOsmPoiFact(
       osmId: poi.osmId,
       poiName: poi.name,
       category: poi.category,
     );
-    
+
     if (factText != null) {
       setState(() {
         _factsCount++;
         _visitedOsmIds.add(poi.osmId);
       });
-      
-      // Говорим название
+
       await _ttsService.speak(poi.name);
       await Future.delayed(const Duration(milliseconds: 500));
-      
-      // Говорим факт
       await _ttsService.speak(factText);
-      
+
       print('✅ POI озвучен: ${poi.name}');
     } else {
       print('❌ Не удалось получить факт для POI: ${poi.name}');
     }
   }
 
-  /// Озвучить общий факт (через DeepSeek)
   Future<void> _speakGeneralFact() async {
     print('📢 Озвучиваем общий факт');
-    
-    // Чередуем категории
+
     final categories = ['sport', 'science', 'general'];
     final category = categories[_factsCount % categories.length];
-    
+
     final factText = await _apiService.getGeneratedFact(
       type: 'general',
       category: category,
     );
-    
+
     if (factText != null) {
       setState(() => _factsCount++);
       await _ttsService.speak(factText);
@@ -437,7 +443,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     _positionSubscription?.cancel();
     _factTimer?.cancel();
     await bg.stopService();
-    
+
     final session = RunSession(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       date: DateTime.now(),
@@ -447,14 +453,14 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       route: _route,
       calories: _calculateCalories(),
     );
-    
+
     await _repository.saveSession(session);
     await _ttsService.speak(
       'Тренировка окончена. '
       'Дистанция: ${(_totalDistance / 1000).toStringAsFixed(2)} километра. '
-      'Услышано фактов: $_factsCount'
+      'Услышано фактов: $_factsCount',
     );
-    
+
     if (mounted) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
@@ -480,7 +486,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   void _onPositionUpdate(FilteredPosition data) {
     if (_state != RunState.running || data.isJump) return;
-    
+
     setState(() {
       _currentPosition = data.raw;
       _filteredPosition = data.filtered;
@@ -489,22 +495,23 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         lat: data.filtered.latitude,
         lon: data.filtered.longitude,
         timestamp: data.raw.timestamp ?? DateTime.now(),
-        speed: data.raw.speed
+        speed: data.raw.speed,
       ));
     });
-    
+
     if (_route.length >= 2) {
       final last = _route[_route.length - 2];
       final distance = Geolocator.distanceBetween(
-        last.lat, last.lon,
-        data.filtered.latitude, data.filtered.longitude
+        last.lat,
+        last.lon,
+        data.filtered.latitude,
+        data.filtered.longitude,
       );
       setState(() => _totalDistance += distance);
     }
-    
+
     if (_followUser) _moveCamera(data.filtered, data.raw.speed);
-    
-    // Периодически обновляем POI (каждые 30 секунд)
+
     final now = DateTime.now();
     if (_lastFactTime != null && now.difference(_lastFactTime!).inSeconds > 30) {
       _loadNearbyPois(data.filtered.latitude, data.filtered.longitude);
@@ -514,7 +521,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   void _onBackgroundLocation(dynamic data) {
     if (!mounted || data['lat'] == null) return;
-    
+
     final lat = data['lat'] as double;
     final lon = data['lon'] as double;
     final speed = (data['speed'] as num?)?.toDouble() ?? 0.0;
@@ -523,9 +530,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         ? now.difference(_lastKalmanTime!).inMilliseconds / 1000.0
         : 1.0;
     _lastKalmanTime = now;
-    
+
     final filtered = _kalman.process(lat, lon, 10.0, dt);
-    
+
     setState(() {
       _filteredPosition = filtered;
       _heading = _kalman.heading;
@@ -534,7 +541,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           lat: filtered.latitude,
           lon: filtered.longitude,
           timestamp: DateTime.now(),
-          speed: speed
+          speed: speed,
         ));
       }
     });
@@ -569,21 +576,122 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     return (AppConstants.runningMet * AppConstants.defaultWeightKg * hours).round();
   }
 
+  // --- Загрузка карты (кнопка) ---
+  Future<void> _downloadMapCache() async {
+    if (_currentPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Местоположение ещё не определено'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    // Если карта уже есть — показываем информационное сообщение
+    if (_hasCache) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Карта для этого района уже загружена'),
+          backgroundColor: Colors.blue,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final success = await showMapCacheDialog(
+        context,
+        position: _currentPosition,
+        radiusKm: 15.0,
+      );
+
+      if (success == true) {
+        await _checkCache();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.white),
+                  SizedBox(width: 8),
+                  Text('Карта загружена! Теперь работает без интернета.'),
+                ],
+              ),
+              backgroundColor: Colors.green,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  // === ИСПРАВЛЕНО: кнопка по ЦЕНТРУ экрана справа ===
+  Widget _buildCacheButton() {
+    // Получаем размеры экрана
+    final screenHeight = MediaQuery.of(context).size.height;
+    final statusBarHeight = MediaQuery.of(context).padding.top;
+    final bottomNavHeight = MediaQuery.of(context).padding.bottom;
+    
+    // Вычисляем центр доступной области (без статус-бара и нижней панели)
+    final availableHeight = screenHeight - statusBarHeight - bottomNavHeight;
+    final centerPosition = statusBarHeight + (availableHeight / 2) - 28; // 28 = половина высоты кнопки
+    
+    return Positioned(
+      top: centerPosition,
+      right: 16,
+      child: FloatingActionButton(
+        heroTag: 'cacheBtn',
+        backgroundColor: _hasCache ? Colors.green : Colors.deepPurple,
+        elevation: 6,
+        onPressed: _downloadMapCache,
+        child: Icon(
+          _hasCache ? Icons.offline_bolt : Icons.download_for_offline,
+          color: Colors.white,
+          size: 28,
+        ),
+      ),
+    );
+  }
+
+  // === ИСПРАВЛЕНО: build метод с правильным порядком в Stack ===
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         children: [
           _buildMap(),
-          if (_state == RunState.running || _state == RunState.paused) 
+
+          // Индикаторы (могут занимать всю ширину)
+          if (_state == RunState.running || _state == RunState.paused)
             _buildStatsPanel(),
-          if (_state == RunState.searchingGps) 
+          if (_state == RunState.searchingGps)
             _buildGpsIndicator(),
-          if (_state == RunState.ready) 
+          if (_state == RunState.ready)
             _buildReadyIndicator(),
-          if (_state == RunState.countdown) 
+          if (_state == RunState.countdown)
             _buildCountdown(),
+
+          // Кнопки управления (внизу)
           _buildControlButtons(),
+
+          // Кнопка загрузки карты – теперь поверх всего и по центру!
+          if (_state != RunState.finished)
+            _buildCacheButton(),
         ],
       ),
     );
@@ -601,8 +709,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.runguide.app',
         ),
-        if (_route.isNotEmpty)
-          PolylineLayer(polylines: _buildSpeedPolylines()),
+        if (_route.isNotEmpty) PolylineLayer(polylines: _buildSpeedPolylines()),
         if (_filteredPosition != null)
           MarkerLayer(
             markers: [
@@ -617,19 +724,18 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               ),
             ],
           ),
-        // Показываем OSM POI на карте
         if (_nearbyPois.isNotEmpty)
           MarkerLayer(
             markers: _nearbyPois.map((poi) => Marker(
-              point: poi.location,
-              width: 30,
-              height: 30,
-              child: Icon(
-                Icons.location_on,
-                color: _visitedOsmIds.contains(poi.osmId) ? Colors.grey : Colors.red,
-                size: 30,
-              ),
-            )).toList(),
+                  point: poi.location,
+                  width: 30,
+                  height: 30,
+                  child: Icon(
+                    Icons.location_on,
+                    color: _visitedOsmIds.contains(poi.osmId) ? Colors.grey : Colors.red,
+                    size: 30,
+                  ),
+                )).toList(),
           ),
       ],
     );
@@ -637,14 +743,14 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   List<Polyline> _buildSpeedPolylines() {
     final polylines = <Polyline>[];
-    
+
     for (int i = 1; i < _route.length; i++) {
       final p1 = _route[i - 1];
       final p2 = _route[i];
-      
+
       Color color;
       final speed = p2.speed;
-      
+
       if (speed < 2.0) {
         color = Colors.green;
       } else if (speed < 4.0) {
@@ -654,31 +760,30 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       } else {
         color = Colors.red;
       }
-      
+
       polylines.add(Polyline(
         points: [LatLng(p1.lat, p1.lon), LatLng(p2.lat, p2.lon)],
         color: color,
         strokeWidth: 5,
       ));
     }
-    
+
     return polylines;
   }
 
   Widget _buildStatsPanel() {
     return Positioned(
-      top: 50, left: 16, right: 16,
+      top: 50,
+      left: 16,
+      right: 16,
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.85),
-          borderRadius: BorderRadius.circular(20)
-        ),
+        decoration: BoxDecoration(color: Colors.black.withOpacity(0.85), borderRadius: BorderRadius.circular(20)),
         child: Column(
           children: [
             Text(
               '${(_totalDistance / 1000).toStringAsFixed(2)}',
-              style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.white)
+              style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.white),
             ),
             const Text('км', style: TextStyle(color: Colors.white70)),
             const SizedBox(height: 12),
@@ -708,17 +813,16 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   Widget _buildGpsIndicator() {
     return Positioned(
-      top: 50, left: 16, right: 16,
+      top: 50,
+      left: 16,
+      right: 16,
       child: Container(
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.7),
-          borderRadius: BorderRadius.circular(12)
-        ),
+        decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(12)),
         child: const Row(children: [
           SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
           SizedBox(width: 12),
-          Text('Определяем местоположение...', style: TextStyle(color: Colors.white))
+          Text('Определяем местоположение...', style: TextStyle(color: Colors.white)),
         ]),
       ),
     );
@@ -726,17 +830,16 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   Widget _buildReadyIndicator() {
     return Positioned(
-      top: 50, left: 16, right: 16,
+      top: 50,
+      left: 16,
+      right: 16,
       child: Container(
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.green.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(12)
-        ),
+        decoration: BoxDecoration(color: Colors.green.withOpacity(0.9), borderRadius: BorderRadius.circular(12)),
         child: const Row(children: [
           Icon(Icons.check_circle, color: Colors.white),
           SizedBox(width: 8),
-          Text('Готов к старту', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+          Text('Готов к старту', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         ]),
       ),
     );
@@ -755,13 +858,13 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                 style: TextStyle(
                   fontSize: 80,
                   fontWeight: FontWeight.bold,
-                  color: _countdown > 0 ? Colors.yellow : Colors.green
-                )
+                  color: _countdown > 0 ? Colors.yellow : Colors.green,
+                ),
               ),
               const SizedBox(height: 20),
               Text(
                 _countdown > 0 ? 'Приготовьтесь!' : 'Бегите!',
-                style: const TextStyle(fontSize: 24, color: Colors.white)
+                style: const TextStyle(fontSize: 24, color: Colors.white),
               ),
             ],
           ),
@@ -772,7 +875,9 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   Widget _buildControlButtons() {
     return Positioned(
-      bottom: 30, left: 16, right: 16,
+      bottom: 30,
+      left: 16,
+      right: 16,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -783,7 +888,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                 backgroundColor: Colors.green,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(150, 60),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
               child: const Text('СТАРТ', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ),
@@ -794,7 +899,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                 backgroundColor: Colors.orange,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(150, 60),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
               child: const Text('ПАУЗА', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ),
@@ -806,7 +911,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                   backgroundColor: Colors.green,
                   foregroundColor: Colors.white,
                   minimumSize: const Size(120, 60),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                 ),
                 child: const Text('ДАЛЬШЕ', style: TextStyle(fontSize: 18)),
               ),
@@ -817,7 +922,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                   backgroundColor: Colors.red,
                   foregroundColor: Colors.white,
                   minimumSize: const Size(120, 60),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                 ),
                 child: const Text('СТОП', style: TextStyle(fontSize: 18)),
               ),
@@ -829,7 +934,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                 backgroundColor: Colors.blue,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(200, 60),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30))
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
               ),
               child: const Text('Новая тренировка', style: TextStyle(fontSize: 18)),
             ),

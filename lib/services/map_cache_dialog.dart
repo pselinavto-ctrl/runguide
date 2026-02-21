@@ -63,7 +63,6 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
 
   Future<void> _startDownload() async {
     try {
-      // Проверяем интернет
       setState(() {
         _statusText = 'Проверка подключения...';
       });
@@ -82,7 +81,7 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
       if (MapCacheService.isDownloading) {
         setState(() {
           _hasError = true;
-          _errorMessage = 'Скачивание уже выполняется в другом окне.';
+          _errorMessage = 'Загрузка уже выполняется в другом окне.\nДождитесь завершения.';
           _statusText = 'Уже скачивается';
         });
         return;
@@ -102,6 +101,7 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
         _statusText = 'Подготовка к загрузке...';
       });
 
+      // ❗ Теперь используем await for вместо listen для корректной отмены
       final stream = MapCacheService.downloadArea(
         _currentPosition!,
         radiusKm: widget.radiusKm,
@@ -111,7 +111,7 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
 
       _subscription = stream.listen(
         (event) {
-          if (_isCancelled || !mounted) return;
+          if (!mounted || _isCancelled) return;
 
           setState(() {
             _progress = event.percentageProgress / 100;
@@ -132,6 +132,13 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
         },
         onError: (error) {
           if (!mounted) return;
+          
+          // ❗ Не показываем ошибку если это была отмена
+          if (_isCancelled || error.toString().contains('cancelled')) {
+            debugPrint('⛔ Загрузка была отменена, игнорируем ошибку');
+            return;
+          }
+          
           setState(() {
             _hasError = true;
             _errorMessage = _formatError(error);
@@ -149,9 +156,10 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
             });
           }
         },
+        cancelOnError: false, // ❗ Важно: не отменяем подписку при ошибке сами
       );
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || _isCancelled) return;
       setState(() {
         _hasError = true;
         _errorMessage = _formatError(e);
@@ -164,11 +172,14 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
   String _formatError(dynamic error) {
     final errorStr = error.toString();
     
+    if (errorStr.contains('cancelled') || errorStr.contains('отмен')) {
+      return 'Загрузка отменена пользователем';
+    }
     if (errorStr.contains('SocketException') || errorStr.contains('Connection failed')) {
       return 'Потеряно соединение с интернетом.\nПроверьте подключение и попробуйте снова.';
     }
     if (errorStr.contains('Скачивание уже идёт')) {
-      return 'Скачивание уже выполняется.\nДождитесь завершения или перезапустите приложение.';
+      return 'Загрузка уже выполняется.\nДождитесь завершения или перезапустите приложение.';
     }
     if (errorStr.contains('timeout')) {
       return 'Сервер карт не отвечает.\nПопробуйте позже.';
@@ -178,15 +189,18 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
   }
 
   Future<void> _cancelDownload() async {
-    if (_isCancelling) return;
+    if (_isCancelling || _isCancelled) return;
     
     setState(() {
       _isCancelling = true;
+      _isCancelled = true;
       _statusText = 'Отмена загрузки...';
     });
 
-    _isCancelled = true;
+    // ❗ Сначала отменяем подписку на stream
     await _subscription?.cancel();
+    
+    // ❗ Затем отменяем саму загрузку
     await MapCacheService.cancelDownload();
     
     if (mounted) {
@@ -198,7 +212,6 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
   Widget build(BuildContext context) {
     return WillPopScope(
       onWillPop: () async {
-        // Блокируем закрытие кнопкой назад во время скачивания
         if (!_isComplete && !_hasError && !_isCancelling) {
           return false;
         }

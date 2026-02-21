@@ -5,8 +5,7 @@ import '../../services/run_repository.dart';
 import '../../data/models/run_session.dart';
 import 'run_screen.dart';
 import 'history_screen.dart';
-import '../../services/map_cache_dialog.dart';
-import '../../services/map_cache_service.dart'; // добавлен импорт
+import '../../services/map_cache_service.dart'; // только для проверки статуса
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -85,53 +84,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _dragExtent = 0;
   }
 
-  /// Загрузка карты для офлайн-режима
-  Future<void> _downloadMapCache() async {
-    try {
-      final success = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const MapCacheDownloadDialog(
-          position: null,
-          radiusKm: 15.0,
-        ),
-      );
-
-      if (success == true) {
-        await _checkCache();
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Row(
-                children: [
-                  Icon(Icons.check_circle, color: Colors.white),
-                  SizedBox(width: 8),
-                  Text('Карта загружена! Теперь работает без интернета.'),
-                ],
-              ),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Ошибка: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
@@ -145,7 +97,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               onVerticalDragEnd: _handleDragEnd,
               child: Stack(
                 children: [
-                  // Фоновое изображение (без изменений)
+                  // Фоновое изображение
                   Positioned.fill(
                     child: Image.asset(
                       'assets/images/runner_bg.png',
@@ -303,7 +255,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     ),
                   ),
                   
-                  // Раскрывающееся меню (без изменений, но для краткости я оставлю как было)
+                  // Раскрывающееся меню (без кнопки загрузки карты)
                   AnimatedPositioned(
                     duration: const Duration(milliseconds: 300),
                     curve: Curves.easeOutCubic,
@@ -376,10 +328,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                         );
                                       },
                                     ),
-                                    
-                                    const SizedBox(height: 16),
-                                    
-                                    _buildMapCacheButton(),
                                     
                                     const SizedBox(height: 16),
                                     
@@ -506,88 +454,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 ],
               ),
             ),
-    );
-  }
-
-  Widget _buildMapCacheButton() {
-    Color buttonColor;
-    IconData buttonIcon;
-    String subtitle;
-    
-    if (_hasCache) {
-      buttonColor = const Color(0xFF9C27B0);
-      buttonIcon = Icons.offline_bolt_rounded;
-      subtitle = 'Карта загружена';
-    } else {
-      buttonColor = const Color(0xFF607D8B);
-      buttonIcon = Icons.map_outlined;
-      subtitle = 'Нажмите для загрузки';
-    }
-    
-    return GestureDetector(
-      onTap: () {
-        _toggleMenu();
-        Future.delayed(
-          const Duration(milliseconds: 300),
-          () => _downloadMapCache(),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: const Color(0xFF252542),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: _hasCache 
-                ? Colors.purple.shade800.withOpacity(0.5)
-                : Colors.grey.shade800,
-            width: 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: buttonColor.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Icon(buttonIcon, color: buttonColor, size: 28),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Карта офлайн',
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      color: _hasCache 
-                          ? Colors.purple.shade300
-                          : Colors.grey.shade500,
-                      fontSize: 13,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Icon(
-              Icons.arrow_forward_ios_rounded,
-              color: Colors.grey.shade700,
-              size: 18,
-            ),
-          ],
-        ),
-      ),
     );
   }
 

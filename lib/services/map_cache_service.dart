@@ -17,6 +17,9 @@ class MapCacheService {
   static bool _isDownloading = false;
   static bool get isDownloading => _isDownloading;
 
+  // ❗ ID экземпляра загрузки для управления (cancel/pause/resume)
+  static Object _currentInstanceId = 0;
+
   static Future<void> init() async {
     try {
       await FMTCObjectBoxBackend().initialise();
@@ -40,7 +43,7 @@ class MapCacheService {
       final stats = store.stats;
       final length = await stats.length;
       final size = await stats.size;
-      
+
       return CacheStats(
         tilesCount: length,
         sizeBytes: (size * 1024).toInt(),
@@ -76,40 +79,42 @@ class MapCacheService {
     }
 
     _isDownloading = true;
+    // Генерируем уникальный ID для этой загрузки
+    _currentInstanceId = DateTime.now().millisecondsSinceEpoch;
 
     final radiusDegrees = radiusKm / 111.0;
     final bounds = LatLngBounds(
       LatLng(position.latitude - radiusDegrees, position.longitude - radiusDegrees),
       LatLng(position.latitude + radiusDegrees, position.longitude + radiusDegrees),
     );
-    
+
     final region = RectangleRegion(bounds);
     final downloadableRegion = region.toDownloadable(
       minZoom: minZoom,
       maxZoom: maxZoom,
       options: _tileLayer,
     );
-    
+
+    // Запускаем загрузку с уникальным instanceId
     final result = FMTCStore(storeName).download.startForeground(
-      region: downloadableRegion,
-    );
-    
-    // Сбрасываем флаг при завершении
-    result.downloadProgress.listen(
-      (event) {},
-      onDone: () => _isDownloading = false,
-      onError: (_) => _isDownloading = false,
-    );
-    
+          region: downloadableRegion,
+          instanceId: _currentInstanceId,
+        );
+
+    // Возвращаем только stream прогресса
     return result.downloadProgress;
   }
 
   /// Отмена текущего скачивания
   static Future<void> cancelDownload() async {
     try {
-      await FMTCStore(storeName).download.cancel();
+      debugPrint('⛔ Запрос на отмену загрузки... (instanceId: $_currentInstanceId)');
+      
+      // Отменяем через StoreDownload с тем же instanceId
+      await FMTCStore(storeName).download.cancel(instanceId: _currentInstanceId);
+      
       _isDownloading = false;
-      debugPrint('⛔ Скачивание отменено');
+      debugPrint('✅ Загрузка отменена');
     } catch (e) {
       debugPrint('❌ Ошибка отмены: $e');
       _isDownloading = false;
