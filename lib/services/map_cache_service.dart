@@ -1,3 +1,4 @@
+import 'dart:async'; // ← ДОБАВИТЬ ЭТОТ ИМПОРТ
 import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
@@ -17,8 +18,11 @@ class MapCacheService {
   static bool _isDownloading = false;
   static bool get isDownloading => _isDownloading;
 
-  // ❗ ID экземпляра загрузки для управления (cancel/pause/resume)
+  // ID экземпляра загрузки для управления
   static Object _currentInstanceId = 0;
+  
+  // Флаг: была ли загрузка завершена полностью
+  static bool _isCompleteDownload = false;
 
   static Future<void> init() async {
     try {
@@ -54,9 +58,10 @@ class MapCacheService {
     }
   }
 
+  /// Проверяем есть ли КОМПЛЕТНАЯ загрузка (не менее 1000 тайлов)
   static Future<bool> hasCache() async {
     final stats = await getStats();
-    return stats.tilesCount > 0;
+    return stats.tilesCount > 1000;
   }
 
   /// Проверка подключения к интернету
@@ -79,7 +84,7 @@ class MapCacheService {
     }
 
     _isDownloading = true;
-    // Генерируем уникальный ID для этой загрузки
+    _isCompleteDownload = false;
     _currentInstanceId = DateTime.now().millisecondsSinceEpoch;
 
     final radiusDegrees = radiusKm / 111.0;
@@ -101,19 +106,62 @@ class MapCacheService {
           instanceId: _currentInstanceId,
         );
 
-    // Возвращаем только stream прогресса
-    return result.downloadProgress;
+    // Создаём контролируемый stream
+    final controller = StreamController<DownloadProgress>.broadcast();
+    
+    late StreamSubscription<DownloadProgress> subscription;
+    
+    subscription = result.downloadProgress.listen(
+      (event) {
+        if (!_isDownloading) {
+          // Если отменили, не пропускаем дальше
+          return;
+        }
+        if (event.percentageProgress >= 99.9) {
+          _isCompleteDownload = true;
+        }
+        controller.add(event);
+      },
+      onError: (error) {
+        _isDownloading = false;
+        controller.addError(error);
+        controller.close();
+      },
+      onDone: () {
+        _isDownloading = false;
+        controller.close();
+      },
+      cancelOnError: true,
+    );
+
+    // При закрытии controller отменяем подписку
+    controller.onCancel = () {
+      subscription.cancel();
+    };
+
+    return controller.stream;
   }
 
-  /// Отмена текущего скачивания
+  /// Отмена текущего скачивания с ОЧИСТКОЙ неполных данных
   static Future<void> cancelDownload() async {
     try {
       debugPrint('⛔ Запрос на отмену загрузки... (instanceId: $_currentInstanceId)');
       
-      // Отменяем через StoreDownload с тем же instanceId
+      // Сначала сбрасываем флаг, чтобы stream прекратил обработку
+      _isDownloading = false;
+      
+      // Отменяем через FMTC
       await FMTCStore(storeName).download.cancel(instanceId: _currentInstanceId);
       
-      _isDownloading = false;
+      // Ждём немного, чтобы отмена применилась
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // Очищаем неполные данные только если загрузка не завершена
+      if (!_isCompleteDownload) {
+        debugPrint('🗑️ Очистка неполной загрузки...');
+        await clearCache();
+      }
+      
       debugPrint('✅ Загрузка отменена');
     } catch (e) {
       debugPrint('❌ Ошибка отмены: $e');
@@ -123,8 +171,11 @@ class MapCacheService {
 
   static Future<void> clearCache() async {
     try {
-      await FMTCStore(storeName).manage.delete();
-      debugPrint('🗑️ Cache cleared');
+      final store = FMTCStore(storeName);
+      await store.manage.delete();
+      // Пересоздаем пустой store
+      await store.manage.create();
+      debugPrint('🗑️ Cache cleared and recreated');
     } catch (e) {
       debugPrint('❌ Clear cache error: $e');
     }
