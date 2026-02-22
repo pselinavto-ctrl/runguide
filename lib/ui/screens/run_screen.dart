@@ -13,6 +13,8 @@ import '../../services/run_repository.dart';
 import '../../services/api_service.dart';
 import '../../services/map_cache_service.dart';
 import '../../services/map_cache_dialog.dart';
+import '../../services/settings_service.dart';
+import '../../core/speech_mode.dart';
 import '../../data/models/route_point.dart';
 import '../../data/models/run_session.dart';
 import '../../data/models/poi.dart';
@@ -33,6 +35,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   final TtsService _ttsService = TtsService();
   final RunRepository _repository = RunRepository();
   final ApiService _apiService = ApiService();
+  final SettingsService _settingsService = SettingsService();
 
   RunState _state = RunState.initializing;
   Position? _currentPosition;
@@ -58,15 +61,21 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   // OSM POI
   List<OsmPoi> _nearbyPois = [];
   Set<int> _visitedOsmIds = {};
-  Timer? _factTimer;
-  DateTime? _lastFactTime;
   bool _isSpeaking = false;
 
   // Кэш карты
   bool _hasCache = false;
 
-  // Для ограничения частоты общих фактов
-  DateTime? _lastGeneralFactTime; // ← ДОБАВЛЕНО
+  // Для ограничения частоты общих фактов (только статистика)
+  DateTime? _lastGeneralFactTime;
+
+  // НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ РЕЖИМОВ РЕЧИ
+  late SpeechMode _speechMode;
+  DateTime? _lastSpeechTime;      // время последней любой речи
+  DateTime? _lastPoiSpeechTime;   // время последнего POI в кластере
+  int _poiSpokenInCluster = 0;
+  Timer? _speechTimer;             // таймер для проверки речи
+  DateTime? _startTime;            // время начала тренировки (для первого факта)
 
   @override
   void initState() {
@@ -81,6 +90,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     await _ttsService.init();
     await bg.initBackgroundService();
     await _apiService.init();
+    _speechMode = await _settingsService.getSpeechMode();   // загружаем режим
 
     final hasPermission = await _locationService.checkPermission();
     if (!hasPermission) {
@@ -240,10 +250,10 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _speechTimer?.cancel();
     _runTimer?.cancel();
     _positionSubscription?.cancel();
     _countdownTimer?.cancel();
-    _factTimer?.cancel();
     _locationService.dispose();
     _apiService.dispose();
     _ttsService.dispose();
@@ -266,6 +276,28 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     });
   }
 
+  /// Определяет время суток (утро, день, вечер, ночь)
+  String _getTimeOfDay() {
+    final hour = DateTime.now().hour;
+    if (hour >= 5 && hour < 12) return 'утро';
+    if (hour >= 12 && hour < 18) return 'день';
+    if (hour >= 18 && hour < 23) return 'вечер';
+    return 'ночь';
+  }
+
+  /// Формирует персонализированное приветствие
+  Future<String> _buildGreeting() async {
+    final timeOfDay = _getTimeOfDay();
+    final city = _apiService.currentCityName ?? 'твоём городе';
+    
+    final greeting = await _apiService.getGreeting(
+      cityName: city,
+      timeOfDay: timeOfDay,
+    );
+
+    return greeting ?? 'Доброе $timeOfDay! Сегодня в $city. Я уверен, мы отлично побегаем и много чего узнаем!';
+  }
+
   Future<void> _startRun() async {
     setState(() {
       _state = RunState.running;
@@ -276,7 +308,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _kalman.reset();
       _visitedOsmIds.clear();
       _isSpeaking = false;
-      _lastGeneralFactTime = null; // Сброс при старте новой тренировки
+      _lastGeneralFactTime = null;
+      _lastSpeechTime = null;
+      _lastPoiSpeechTime = null;
+      _poiSpokenInCluster = 0;
+      _startTime = DateTime.now(); // запоминаем время старта
     });
 
     await bg.startService();
@@ -289,11 +325,16 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       }
     });
 
-    _startFactTimer();
+    _startSpeechTimer();
 
     if (_filteredPosition != null) {
       _loadNearbyPois(_filteredPosition!.latitude, _filteredPosition!.longitude);
     }
+
+    // Приветствие
+    String greeting = await _buildGreeting();
+    await _ttsService.speak(greeting);
+    await Future.delayed(const Duration(milliseconds: 800));
 
     await _ttsService.speak('Тренировка началась. Приятного бега!');
 
@@ -329,129 +370,232 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _startFactTimer() {
-    _lastFactTime = DateTime.now();
-
-    _factTimer = Timer.periodic(
-      Duration(minutes: AppConstants.generalFactIntervalMinutes.toInt()),
-      (_) async {
-        if (_state != RunState.running || _isSpeaking) return;
-
-        await _speakNextFact();
-      },
-    );
+  void _startSpeechTimer() {
+    _speechTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      if (_state != RunState.running || _isSpeaking) return;
+      await _trySpeakSomething();
+    });
   }
 
-  Future<void> _speakNextFact() async {
+  /// Проверяет, можно ли сейчас говорить с учётом режима
+  bool _canSpeak({bool isPoi = false}) {
+    if (_isSpeaking) return false;
+
+    final now = DateTime.now();
+    final minInterval = _speechMode.minSpeechIntervalSeconds;
+
+    if (_lastSpeechTime != null) {
+      final secondsSinceLast = now.difference(_lastSpeechTime!).inSeconds;
+      if (secondsSinceLast < minInterval) return false;
+    }
+
+    if (isPoi) {
+      if (_poiSpokenInCluster >= _speechMode.maxPoiPerCluster) {
+        if (_lastPoiSpeechTime != null) {
+          final secondsSinceLastPoi = now.difference(_lastPoiSpeechTime!).inSeconds;
+          if (secondsSinceLastPoi < _speechMode.clusterWindowSeconds) {
+            return false;
+          } else {
+            _poiSpokenInCluster = 0;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /// Возвращает ближайший неозвученный POI в радиусе (без проверки интервала)
+  Future<OsmPoi?> _findBestUnvisitedPoi() async {
+    if (_filteredPosition == null) return null;
+    OsmPoi? best;
+    double minDist = double.infinity;
+
+    for (final poi in _nearbyPois) {
+      final distance = Geolocator.distanceBetween(
+        _filteredPosition!.latitude,
+        _filteredPosition!.longitude,
+        poi.lat,
+        poi.lon,
+      );
+
+      if (distance >= AppConstants.poiTriggerRadius) continue;
+
+      if (_visitedOsmIds.contains(poi.osmId)) continue;
+
+      final wasVisited = await _repository.wasPoiVisited(poi.osmId);
+      if (wasVisited) {
+        setState(() {
+          _visitedOsmIds.add(poi.osmId);
+        });
+        continue;
+      }
+
+      if (distance < minDist) {
+        minDist = distance;
+        best = poi;
+      }
+    }
+    return best;
+  }
+
+  /// Проверяем POI при каждом движении
+  Future<void> _checkNearbyPoisForAnnouncement() async {
+    if (_isSpeaking || _filteredPosition == null) return;
+
+    final sortedPois = List<OsmPoi>.from(_nearbyPois)
+      ..sort((a, b) {
+        final distA = Geolocator.distanceBetween(
+          _filteredPosition!.latitude,
+          _filteredPosition!.longitude,
+          a.lat,
+          a.lon,
+        );
+        final distB = Geolocator.distanceBetween(
+          _filteredPosition!.latitude,
+          _filteredPosition!.longitude,
+          b.lat,
+          b.lon,
+        );
+        return distA.compareTo(distB);
+      });
+
+    for (final poi in sortedPois) {
+      final distance = Geolocator.distanceBetween(
+        _filteredPosition!.latitude,
+        _filteredPosition!.longitude,
+        poi.lat,
+        poi.lon,
+      );
+
+      if (distance >= AppConstants.poiTriggerRadius) continue;
+
+      if (_visitedOsmIds.contains(poi.osmId)) continue;
+
+      final wasVisited = await _repository.wasPoiVisited(poi.osmId);
+      if (wasVisited) {
+        setState(() {
+          _visitedOsmIds.add(poi.osmId);
+        });
+        continue;
+      }
+
+      if (!_canSpeak(isPoi: true)) break;
+
+      await _speakOsmPoiFact(poi);
+      break;
+    }
+  }
+
+  /// Пытается что-то сказать: сначала POI, если нет – общий факт (если разрешено)
+  Future<void> _trySpeakSomething() async {
+    if (_isSpeaking) return;
+
+    if (!_canSpeak()) return;
+
+    final bestPoi = await _findBestUnvisitedPoi();
+    if (bestPoi != null && _canSpeak(isPoi: true)) {
+      await _speakOsmPoiFact(bestPoi);
+      return;
+    }
+
+    final factInterval = _speechMode.factIntervalSeconds;
+    if (factInterval != null) {
+      Duration sinceLastOrStart;
+      if (_lastSpeechTime != null) {
+        sinceLastOrStart = DateTime.now().difference(_lastSpeechTime!);
+      } else if (_startTime != null) {
+        sinceLastOrStart = DateTime.now().difference(_startTime!);
+      } else {
+        sinceLastOrStart = Duration.zero;
+      }
+      if (sinceLastOrStart.inSeconds >= factInterval) {
+        await _speakGeneralFact();
+      }
+    }
+  }
+
+  Future<void> _speakOsmPoiFact(OsmPoi poi) async {
     if (_isSpeaking) return;
     _isSpeaking = true;
 
     try {
-      OsmPoi? nearestPoi;
-      double minDistance = AppConstants.poiTriggerRadius.toDouble();
+      print('🎯 Озвучиваем POI: ${poi.name} (категория: ${poi.category})');
 
-      for (final poi in _nearbyPois) {
-        if (_visitedOsmIds.contains(poi.osmId)) continue;
-
-        if (_filteredPosition != null) {
-          final distance = Geolocator.distanceBetween(
-            _filteredPosition!.latitude,
-            _filteredPosition!.longitude,
-            poi.lat,
-            poi.lon,
-          );
-
-          if (distance < minDistance) {
-            minDistance = distance;
-            nearestPoi = poi;
-          }
-        }
+      if (await _repository.wasPoiVisited(poi.osmId)) {
+        print('⏭️ POI уже озвучивался ранее: ${poi.name}');
+        setState(() {
+          _visitedOsmIds.add(poi.osmId);
+        });
+        return;
       }
 
-      if (nearestPoi != null) {
-        await _speakOsmPoiFact(nearestPoi);
+      final factText = await _apiService.getOsmPoiFact(
+        osmId: poi.osmId,
+        poiName: poi.name,
+        category: poi.category,
+        cityName: _apiService.currentCityName,
+      );
+
+      if (factText != null) {
+        setState(() {
+          _factsCount++;
+          _visitedOsmIds.add(poi.osmId);
+          _lastSpeechTime = DateTime.now();
+          _lastPoiSpeechTime = DateTime.now();
+          _poiSpokenInCluster++;
+        });
+
+        await _repository.savePoiVisit(poi.osmId, poi.name, factText: factText);
+
+        await _ttsService.speak(poi.name);
+        await Future.delayed(const Duration(milliseconds: 500));
+        await _ttsService.speak(factText);
+
+        print('✅ POI озвучен: ${poi.name}');
       } else {
-        await _speakGeneralFact();
+        print('❌ Не удалось получить факт для POI: ${poi.name}');
       }
     } finally {
       _isSpeaking = false;
     }
   }
 
-  Future<void> _speakOsmPoiFact(OsmPoi poi) async {
-    print('🎯 Озвучиваем POI: ${poi.name} (категория: ${poi.category})');
-
-    // Проверяем локальную историю
-    if (await _repository.wasPoiVisited(poi.osmId)) {
-      print('⏭️ POI уже озвучивался ранее: ${poi.name}');
-      // ИСПРАВЛЕНО: вместо return озвучиваем общий факт
-      await _speakGeneralFact();
-      return;
-    }
-
-    final factText = await _apiService.getOsmPoiFact(
-      osmId: poi.osmId,
-      poiName: poi.name,
-      category: poi.category,
-      cityName: _apiService.currentCityName,
-    );
-
-    if (factText != null) {
-      setState(() {
-        _factsCount++;
-        _visitedOsmIds.add(poi.osmId);
-      });
-
-      await _repository.savePoiVisit(poi.osmId, poi.name, factText: factText);
-
-      await _ttsService.speak(poi.name);
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _ttsService.speak(factText);
-
-      print('✅ POI озвучен: ${poi.name}');
-    } else {
-      print('❌ Не удалось получить факт для POI: ${poi.name}');
-      // ДОБАВЛЕНО: пробуем общий факт
-      await _speakGeneralFact();
-    }
-  }
-
   Future<void> _speakGeneralFact() async {
-    // ДОБАВЛЕНО: проверка интервала между общими фактами (минимум 2 минуты)
-    if (_lastGeneralFactTime != null) {
-      final secondsSinceLast = DateTime.now().difference(_lastGeneralFactTime!).inSeconds;
-      if (secondsSinceLast < 120) {
-        print('⏱️ Слишком рано для общего факта ($secondsSinceLast сек)');
-        return;
+    if (_isSpeaking) return;
+    _isSpeaking = true;
+
+    try {
+      print('📢 Озвучиваем общий факт');
+
+      final categories = ['sport', 'science', 'general'];
+      final category = categories[_factsCount % categories.length];
+
+      final factText = await _apiService.getGeneratedFact(
+        type: 'general',
+        category: category,
+      );
+
+      if (factText != null) {
+        setState(() {
+          _factsCount++;
+          _lastGeneralFactTime = DateTime.now();
+          _lastSpeechTime = DateTime.now();
+        });
+        await _ttsService.speak(factText);
+        print('✅ Общий факт озвучен: $factText');
+      } else {
+        print('❌ Не удалось получить общий факт');
       }
-    }
-
-    print('📢 Озвучиваем общий факт');
-
-    final categories = ['sport', 'science', 'general'];
-    final category = categories[_factsCount % categories.length];
-
-    final factText = await _apiService.getGeneratedFact(
-      type: 'general',
-      category: category,
-    );
-
-    if (factText != null) {
-      setState(() {
-        _factsCount++;
-        _lastGeneralFactTime = DateTime.now(); // ← ДОБАВЛЕНО
-      });
-      await _ttsService.speak(factText);
-      print('✅ Общий факт озвучен: $factText');
-    } else {
-      print('❌ Не удалось получить общий факт');
+    } finally {
+      _isSpeaking = false;
     }
   }
 
   void _pauseRun() {
     _runTimer?.cancel();
     _positionSubscription?.pause();
-    _factTimer?.cancel();
+    _speechTimer?.cancel();
     setState(() => _state = RunState.paused);
     _ttsService.speak('Тренировка на паузе');
   }
@@ -463,7 +607,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       }
     });
     _positionSubscription?.resume();
-    _startFactTimer();
+    _startSpeechTimer();
     setState(() => _state = RunState.running);
     _ttsService.speak('Продолжаем');
   }
@@ -471,7 +615,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Future<void> _stopRun() async {
     _runTimer?.cancel();
     _positionSubscription?.cancel();
-    _factTimer?.cancel();
+    _speechTimer?.cancel();
     await bg.stopService();
 
     final session = RunSession(
@@ -511,6 +655,10 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _visitedOsmIds.clear();
       _nearbyPois.clear();
       _lastGeneralFactTime = null;
+      _lastSpeechTime = null;
+      _lastPoiSpeechTime = null;
+      _poiSpokenInCluster = 0;
+      _startTime = null;
     });
     _repository.clearActiveRoute();
   }
@@ -543,37 +691,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
     if (_followUser) _moveCamera(data.filtered, data.raw.speed);
 
-    // ← ДОБАВЛЕНО: Проверяем POI при каждом движении
     _checkNearbyPoisForAnnouncement();
 
     final now = DateTime.now();
-    if (_lastFactTime != null && now.difference(_lastFactTime!).inSeconds > 30) {
+    if (_lastSpeechTime != null && now.difference(_lastSpeechTime!).inSeconds > 30) {
       _loadNearbyPois(data.filtered.latitude, data.filtered.longitude);
-      _lastFactTime = now;
-    }
-  }
-
-  /// Проверяем близость к POI и озвучиваем если нужно
-  Future<void> _checkNearbyPoisForAnnouncement() async {
-    if (_isSpeaking || _filteredPosition == null) return;
-
-    for (final poi in _nearbyPois) {
-      // Пропускаем уже озвученные
-      if (_visitedOsmIds.contains(poi.osmId)) continue;
-
-      // Считаем расстояние до POI
-      final distance = Geolocator.distanceBetween(
-        _filteredPosition!.latitude,
-        _filteredPosition!.longitude,
-        poi.lat,
-        poi.lon,
-      );
-
-      // Если в радиусе 50 метров — озвучиваем!
-      if (distance < 3000.0) {
-        await _speakOsmPoiFact(poi);
-        break; // Озвучиваем только один POI за раз
-      }
     }
   }
 

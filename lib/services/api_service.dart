@@ -11,9 +11,8 @@ class ApiService {
   final http.Client _client = http.Client();
   String? _deviceId;
   int? _currentCityId;
-  String? _currentCityName; // ← ДОБАВЛЕНО: храним название города
+  String? _currentCityName;
 
-  /// Инициализация - создаёт или загружает ID устройства
   Future<void> init() async {
     final box = await Hive.openBox('settings');
     _deviceId = box.get('device_id');
@@ -29,26 +28,21 @@ class ApiService {
   
   String get userId => _deviceId ?? 'unknown';
 
-  /// Установка ID устройства
   void setDeviceId(String deviceId) {
     _deviceId = deviceId;
   }
 
-  /// Установка ID текущего города
   void setCityId(int? cityId) {
     _currentCityId = cityId;
   }
 
-  /// ← ДОБАВЛЕНО: Геттер для названия города
   String? get currentCityName => _currentCityName;
 
-  /// ← ДОБАВЛЕНО: Установка названия города
   void setCityName(String? cityName) {
     _currentCityName = cityName;
     print('🏙️ Установлен город для API: $cityName');
   }
 
-  /// Определить город по координатам
   Future<CityInfo?> getCity(double lat, double lon) async {
     try {
       final response = await _client.get(
@@ -60,7 +54,7 @@ class ApiService {
         if (data['success'] == true && data['data']['found'] == true) {
           final cityData = data['data']['city'];
           _currentCityId = cityData['id'];
-          _currentCityName = cityData['name']; // ← Сохраняем название
+          _currentCityName = cityData['name'];
           return CityInfo(
             id: cityData['id'],
             name: cityData['name'],
@@ -75,7 +69,6 @@ class ApiService {
     }
   }
 
-  /// Получить POI рядом с координатами (из БД)
   Future<List<Poi>> getNearbyPois(double lat, double lon, {int radius = 500}) async {
     try {
       String url = '${AppConstants.apiUrl}/get_pois.php?lat=$lat&lon=$lon&radius=$radius';
@@ -100,7 +93,6 @@ class ApiService {
     }
   }
 
-  /// Получить POI из OpenStreetMap
   Future<List<OsmPoi>> getOsmPois(double lat, double lon, {int radius = 1000}) async {
     try {
       print('🗺️ Запрос OSM POI: lat=$lat, lon=$lon, radius=$radius');
@@ -128,7 +120,6 @@ class ApiService {
     }
   }
 
-  /// Получить факт о конкретном POI
   Future<PoiFact?> getPoiFact(int poiId) async {
     try {
       final response = await _client.get(
@@ -153,15 +144,13 @@ class ApiService {
     }
   }
 
-  /// ← ИСПРАВЛЕНО: Получить уникальный факт о POI из OSM с указанием города
   Future<String?> getOsmPoiFact({
     required int osmId,
     required String poiName,
     required String category,
-    String? cityName, // ← ДОБАВЛЕН параметр
+    String? cityName,
   }) async {
     try {
-      // Используем переданный город или текущий
       final city = cityName ?? _currentCityName ?? 'этом городе';
       
       var url = '${AppConstants.apiUrl}/generate_fact.php?type=poi'
@@ -169,7 +158,7 @@ class ApiService {
           '&name=${Uri.encodeComponent(poiName)}'
           '&category=$category'
           '&user_id=$userId'
-          '&city_name=${Uri.encodeComponent(city)}'; // ← ДОБАВЛЕНО
+          '&city_name=${Uri.encodeComponent(city)}';
 
       print('🗺️ Запрос факта о POI: $poiName в городе: $city');
 
@@ -192,7 +181,6 @@ class ApiService {
     }
   }
 
-  /// Получить общий факт
   Future<GeneralFact?> getGeneralFact({String? category}) async {
     try {
       String url = '${AppConstants.apiUrl}/get_general_fact.php?user_id=$userId';
@@ -224,7 +212,6 @@ class ApiService {
     }
   }
 
-  /// Сохранить посещение POI
   Future<bool> saveVisit(int poiId, int? factId) async {
     try {
       final response = await _client.post(
@@ -248,7 +235,6 @@ class ApiService {
     }
   }
 
-  /// Получить сгенерированный факт через DeepSeek
   Future<String?> getGeneratedFact({
     required String type,
     int? poiId,
@@ -260,7 +246,6 @@ class ApiService {
     try {
       String url = '${AppConstants.apiUrl}/generate_fact.php?type=$type';
       
-      // ДОБАВЛЯЕМ USER_ID - ЭТО БЫЛО ПРОПУЩЕНО!
       url += '&user_id=$userId';
       
       if (poiId != null) {
@@ -275,7 +260,6 @@ class ApiService {
       if (category != null) {
         url += '&category=$category';
       }
-      // ← ИСПРАВЛЕНО: используем переданный город или текущий
       final city = cityName ?? _currentCityName;
       if (city != null) {
         url += '&city_name=${Uri.encodeComponent(city)}';
@@ -304,16 +288,39 @@ class ApiService {
     }
   }
 
+  /// НОВЫЙ МЕТОД: Получить приветствие для начала тренировки (без погоды)
+  Future<String?> getGreeting({
+    required String cityName,
+    required String timeOfDay,
+  }) async {
+    try {
+      String url = '${AppConstants.apiUrl}/generate_fact.php?type=greeting'
+          '&user_id=$userId'
+          '&city_name=${Uri.encodeComponent(cityName)}'
+          '&time_of_day=$timeOfDay';
+      
+      final response = await _client.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          return data['data']['text'];
+        }
+      }
+      return null;
+    } catch (e) {
+      print('❌ Ошибка получения приветствия: $e');
+      return null;
+    }
+  }
+
   void dispose() {
     _client.close();
   }
 }
 
-/// Информация о городе
 class CityInfo {
   final int id;
   final String name;
   final String country;
-
   CityInfo({required this.id, required this.name, required this.country});
 }

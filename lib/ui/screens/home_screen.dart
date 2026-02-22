@@ -5,7 +5,8 @@ import '../../services/run_repository.dart';
 import '../../data/models/run_session.dart';
 import 'run_screen.dart';
 import 'history_screen.dart';
-import '../../services/map_cache_service.dart'; // только для проверки статуса
+import 'settings_screen.dart';                // ← добавлен импорт
+import '../../services/map_cache_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -255,7 +256,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     ),
                   ),
                   
-                  // Раскрывающееся меню (без кнопки загрузки карты)
+                  // Раскрывающееся меню
                   AnimatedPositioned(
                     duration: const Duration(milliseconds: 300),
                     curve: Curves.easeOutCubic,
@@ -354,7 +355,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                       color: const Color(0xFFFF9800),
                                       onTap: () {
                                         _toggleMenu();
-                                        _openSettings();
+                                        _openSettings();  // ← теперь открывает SettingsScreen
                                       },
                                     ),
                                     
@@ -626,11 +627,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   void _openSettings() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Настройки будут добавлены позже'),
-        behavior: SnackBarBehavior.floating,
-      ),
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const SettingsScreen()),
     );
   }
 }
