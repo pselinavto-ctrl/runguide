@@ -1,4 +1,4 @@
-import 'dart:async'; // ← ДОБАВИТЬ ЭТОТ ИМПОРТ
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
@@ -58,10 +58,10 @@ class MapCacheService {
     }
   }
 
-  /// Проверяем есть ли КОМПЛЕТНАЯ загрузка (не менее 1000 тайлов)
+  /// Проверяем есть ли КОМПЛЕТНАЯ загрузка (не менее 500 тайлов для 10км)
   static Future<bool> hasCache() async {
     final stats = await getStats();
-    return stats.tilesCount > 1000;
+    return stats.tilesCount > 500;
   }
 
   /// Проверка подключения к интернету
@@ -75,7 +75,7 @@ class MapCacheService {
 
   static Stream<DownloadProgress> downloadArea(
     Position position, {
-    double radiusKm = 15.0,
+    double radiusKm = 10.0, // Изменено с 15.0 на 10.0
     int minZoom = 10,
     int maxZoom = 17,
   }) {

@@ -605,7 +605,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       final success = await showMapCacheDialog(
         context,
         position: _currentPosition,
-        radiusKm: 15.0,
+        radiusKm: 10.0, // ИСПРАВЛЕНО: было 15.0, стало 10.0
       );
 
       if (success == true) {
@@ -640,35 +640,90 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
-  // === ИСПРАВЛЕНО: кнопка по ЦЕНТРУ экрана справа ===
+  // === ИСПРАВЛЕНО: кнопка скачивания карты с тремя строками ===
   Widget _buildCacheButton() {
-    // Получаем размеры экрана
     final screenHeight = MediaQuery.of(context).size.height;
     final statusBarHeight = MediaQuery.of(context).padding.top;
-    final bottomNavHeight = MediaQuery.of(context).padding.bottom;
-    
-    // Вычисляем центр доступной области (без статус-бара и нижней панели)
-    final availableHeight = screenHeight - statusBarHeight - bottomNavHeight;
-    final centerPosition = statusBarHeight + (availableHeight / 2) - 28; // 28 = половина высоты кнопки
-    
+    final topPosition = statusBarHeight + (screenHeight * 0.40);
+
     return Positioned(
-      top: centerPosition,
+      top: topPosition,
       right: 16,
-      child: FloatingActionButton(
-        heroTag: 'cacheBtn',
-        backgroundColor: _hasCache ? Colors.green : Colors.deepPurple,
+      child: Material(
         elevation: 6,
-        onPressed: _downloadMapCache,
-        child: Icon(
-          _hasCache ? Icons.offline_bolt : Icons.download_for_offline,
-          color: Colors.white,
-          size: 28,
+        borderRadius: BorderRadius.circular(16),
+        color: _hasCache ? Colors.green : Colors.deepPurple,
+        child: InkWell(
+          onTap: _downloadMapCache,
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            width: 64,
+            height: 80,
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _hasCache ? Icons.offline_bolt : Icons.download,
+                  color: Colors.white,
+                  size: 22,
+                ),
+                const SizedBox(height: 2),
+                if (!_hasCache) ...[
+                  const Text(
+                    'СКАЧАТЬ',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      height: 1.0,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const Text(
+                    'КАРТУ',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      height: 1.0,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const Text(
+                    '~30 МБ', // Для 10×10 км примерно 30 МБ
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 8,
+                      height: 1.0,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ] else ...[
+                  const Text(
+                    'ЕСТЬ',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Text(
+                    'КАРТА',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 8,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 
-  // === ИСПРАВЛЕНО: build метод с правильным порядком в Stack ===
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -689,7 +744,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           // Кнопки управления (внизу)
           _buildControlButtons(),
 
-          // Кнопка загрузки карты – теперь поверх всего и по центру!
+          // Кнопка загрузки карты – теперь поверх всего!
           if (_state != RunState.finished)
             _buildCacheButton(),
         ],

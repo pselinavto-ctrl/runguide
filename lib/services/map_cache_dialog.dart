@@ -13,7 +13,7 @@ class MapCacheDownloadDialog extends StatefulWidget {
   const MapCacheDownloadDialog({
     super.key,
     this.position,
-    this.radiusKm = 15.0,
+    this.radiusKm = 10.0, // Изменено с 15.0 на 10.0
     this.minZoom = 10,
     this.maxZoom = 17,
   });
@@ -36,6 +36,7 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
   StreamSubscription<DownloadProgress>? _subscription;
   bool _isCancelled = false;
   bool _isCancelling = false;
+  bool _isMinimized = false;
   Position? _currentPosition;
 
   @override
@@ -101,7 +102,6 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
         _statusText = 'Подготовка к загрузке...';
       });
 
-      // ❗ Теперь используем await for вместо listen для корректной отмены
       final stream = MapCacheService.downloadArea(
         _currentPosition!,
         radiusKm: widget.radiusKm,
@@ -133,7 +133,6 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
         onError: (error) {
           if (!mounted) return;
           
-          // ❗ Не показываем ошибку если это была отмена
           if (_isCancelled || error.toString().contains('cancelled')) {
             debugPrint('⛔ Загрузка была отменена, игнорируем ошибку');
             return;
@@ -156,7 +155,7 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
             });
           }
         },
-        cancelOnError: false, // ❗ Важно: не отменяем подписку при ошибке сами
+        cancelOnError: false,
       );
     } catch (e) {
       if (!mounted || _isCancelled) return;
@@ -197,15 +196,20 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
       _statusText = 'Отмена загрузки...';
     });
 
-    // ❗ Сначала отменяем подписку на stream
     await _subscription?.cancel();
-    
-    // ❗ Затем отменяем саму загрузку
     await MapCacheService.cancelDownload();
     
     if (mounted) {
       Navigator.of(context).pop(false);
     }
+  }
+
+  void _minimizeAndRun() {
+    setState(() {
+      _isMinimized = true;
+    });
+    // Закрываем диалог, загрузка продолжится в фоне
+    Navigator.of(context).pop(true);
   }
 
   @override
@@ -300,10 +304,13 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
                 ),
               ],
               const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (!_isComplete && !_hasError)
+              
+              // КНОПКИ: Отмена слева, Бегать! справа
+              if (!_isComplete && !_hasError)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    // Кнопка Отмена (слева)
                     TextButton.icon(
                       onPressed: _isCancelling ? null : _cancelDownload,
                       icon: _isCancelling 
@@ -312,28 +319,56 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
                               height: 16,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(Icons.close),
-                      label: Text(_isCancelling ? 'Отмена...' : 'Отмена'),
+                          : const Icon(Icons.close, color: Colors.grey),
+                      label: Text(
+                        _isCancelling ? 'Отмена...' : 'Отмена',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
                       style: TextButton.styleFrom(
                         foregroundColor: Colors.grey.shade600,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                       ),
                     ),
-                  if (_isComplete || _hasError)
+                    
+                    // Кнопка Бегать! (справа) - зелёная
                     ElevatedButton.icon(
-                      onPressed: () => Navigator.of(context).pop(_isComplete),
-                      icon: Icon(_isComplete ? Icons.check : Icons.refresh),
-                      label: Text(_isComplete ? 'Готово' : 'Закрыть'),
+                      onPressed: _minimizeAndRun,
+                      icon: const Icon(Icons.directions_run, color: Colors.white),
+                      label: const Text(
+                        'БЕГАТЬ!',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: _isComplete ? Colors.green : Colors.red,
+                        backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
+                        elevation: 4,
                       ),
                     ),
-                ],
-              ),
+                  ],
+                ),
+              
+              if (_isComplete || _hasError)
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.of(context).pop(_isComplete),
+                  icon: Icon(_isComplete ? Icons.check : Icons.refresh),
+                  label: Text(_isComplete ? 'Готово' : 'Закрыть'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isComplete ? Colors.green : Colors.red,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
@@ -443,7 +478,7 @@ class _MapCacheDownloadDialogState extends State<MapCacheDownloadDialog>
 }
 
 Future<bool> showMapCacheDialog(BuildContext context,
-    {Position? position, double radiusKm = 15.0}) async {
+    {Position? position, double radiusKm = 10.0}) async { // Изменено с 15.0 на 10.0
   final result = await showDialog<bool>(
     context: context,
     barrierDismissible: false,
