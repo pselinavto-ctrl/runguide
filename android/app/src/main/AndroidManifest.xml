@@ -16,6 +16,9 @@
     <!-- Интернет -->
     <uses-permission android:name="android.permission.INTERNET" />
     
+    <!-- Управление аудио настройками (для Audio Ducking) -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    
     <application
         android:label="RunGuide"
         android:name="${applicationName}"

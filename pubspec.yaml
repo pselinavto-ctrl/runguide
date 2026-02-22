@@ -30,6 +30,9 @@ dependencies:
   # TTS
   flutter_tts: ^4.0.2
   
+  # Управление аудио сессией (ducking)
+  audio_session: ^0.1.18
+  
   # Фоновый сервис
   flutter_background_service: ^5.0.10
   flutter_background_service_android: ^6.2.7

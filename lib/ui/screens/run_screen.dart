@@ -11,8 +11,8 @@ import '../../services/tts_service.dart';
 import '../../services/background_service.dart' as bg;
 import '../../services/run_repository.dart';
 import '../../services/api_service.dart';
-import '../../services/map_cache_service.dart';        // <-- добавлено
-import '../../services/map_cache_dialog.dart';        // <-- добавлено
+import '../../services/map_cache_service.dart';
+import '../../services/map_cache_dialog.dart';
 import '../../data/models/route_point.dart';
 import '../../data/models/run_session.dart';
 import '../../data/models/poi.dart';
@@ -63,7 +63,10 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   bool _isSpeaking = false;
 
   // Кэш карты
-  bool _hasCache = false;                 // <-- добавлено
+  bool _hasCache = false;
+
+  // Для ограничения частоты общих фактов
+  DateTime? _lastGeneralFactTime; // ← ДОБАВЛЕНО
 
   @override
   void initState() {
@@ -100,7 +103,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       });
       _mapController.move(_filteredPosition!, 16);
       _detectCity(position.latitude, position.longitude);
-      _checkCache();                       // <-- добавлено
+      _checkCache();
     }
   }
 
@@ -109,10 +112,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     if (city != null) {
       print('🏙️ Город определён: ${city.name}');
       _apiService.setCityId(city.id);
+      _apiService.setCityName(city.name);
     }
   }
 
-  Future<void> _checkCache() async {       // <-- добавлено
+  Future<void> _checkCache() async {
     try {
       final hasTiles = await MapCacheService.hasCache();
       if (mounted) {
@@ -272,6 +276,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _kalman.reset();
       _visitedOsmIds.clear();
       _isSpeaking = false;
+      _lastGeneralFactTime = null; // Сброс при старте новой тренировки
     });
 
     await bg.startService();
@@ -376,10 +381,19 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Future<void> _speakOsmPoiFact(OsmPoi poi) async {
     print('🎯 Озвучиваем POI: ${poi.name} (категория: ${poi.category})');
 
+    // Проверяем локальную историю
+    if (await _repository.wasPoiVisited(poi.osmId)) {
+      print('⏭️ POI уже озвучивался ранее: ${poi.name}');
+      // ИСПРАВЛЕНО: вместо return озвучиваем общий факт
+      await _speakGeneralFact();
+      return;
+    }
+
     final factText = await _apiService.getOsmPoiFact(
       osmId: poi.osmId,
       poiName: poi.name,
       category: poi.category,
+      cityName: _apiService.currentCityName,
     );
 
     if (factText != null) {
@@ -388,6 +402,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         _visitedOsmIds.add(poi.osmId);
       });
 
+      await _repository.savePoiVisit(poi.osmId, poi.name, factText: factText);
+
       await _ttsService.speak(poi.name);
       await Future.delayed(const Duration(milliseconds: 500));
       await _ttsService.speak(factText);
@@ -395,10 +411,21 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       print('✅ POI озвучен: ${poi.name}');
     } else {
       print('❌ Не удалось получить факт для POI: ${poi.name}');
+      // ДОБАВЛЕНО: пробуем общий факт
+      await _speakGeneralFact();
     }
   }
 
   Future<void> _speakGeneralFact() async {
+    // ДОБАВЛЕНО: проверка интервала между общими фактами (минимум 2 минуты)
+    if (_lastGeneralFactTime != null) {
+      final secondsSinceLast = DateTime.now().difference(_lastGeneralFactTime!).inSeconds;
+      if (secondsSinceLast < 120) {
+        print('⏱️ Слишком рано для общего факта ($secondsSinceLast сек)');
+        return;
+      }
+    }
+
     print('📢 Озвучиваем общий факт');
 
     final categories = ['sport', 'science', 'general'];
@@ -410,7 +437,10 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     );
 
     if (factText != null) {
-      setState(() => _factsCount++);
+      setState(() {
+        _factsCount++;
+        _lastGeneralFactTime = DateTime.now(); // ← ДОБАВЛЕНО
+      });
       await _ttsService.speak(factText);
       print('✅ Общий факт озвучен: $factText');
     } else {
@@ -480,6 +510,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       _kalman.reset();
       _visitedOsmIds.clear();
       _nearbyPois.clear();
+      _lastGeneralFactTime = null;
     });
     _repository.clearActiveRoute();
   }
@@ -512,10 +543,37 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
     if (_followUser) _moveCamera(data.filtered, data.raw.speed);
 
+    // ← ДОБАВЛЕНО: Проверяем POI при каждом движении
+    _checkNearbyPoisForAnnouncement();
+
     final now = DateTime.now();
     if (_lastFactTime != null && now.difference(_lastFactTime!).inSeconds > 30) {
       _loadNearbyPois(data.filtered.latitude, data.filtered.longitude);
       _lastFactTime = now;
+    }
+  }
+
+  /// Проверяем близость к POI и озвучиваем если нужно
+  Future<void> _checkNearbyPoisForAnnouncement() async {
+    if (_isSpeaking || _filteredPosition == null) return;
+
+    for (final poi in _nearbyPois) {
+      // Пропускаем уже озвученные
+      if (_visitedOsmIds.contains(poi.osmId)) continue;
+
+      // Считаем расстояние до POI
+      final distance = Geolocator.distanceBetween(
+        _filteredPosition!.latitude,
+        _filteredPosition!.longitude,
+        poi.lat,
+        poi.lon,
+      );
+
+      // Если в радиусе 50 метров — озвучиваем!
+      if (distance < 3000.0) {
+        await _speakOsmPoiFact(poi);
+        break; // Озвучиваем только один POI за раз
+      }
     }
   }
 
@@ -588,7 +646,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       return;
     }
 
-    // Если карта уже есть — показываем информационное сообщение
     if (_hasCache) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -605,7 +662,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       final success = await showMapCacheDialog(
         context,
         position: _currentPosition,
-        radiusKm: 10.0, // ИСПРАВЛЕНО: было 15.0, стало 10.0
+        radiusKm: 10.0,
       );
 
       if (success == true) {
@@ -640,7 +697,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
     }
   }
 
-  // === ИСПРАВЛЕНО: кнопка скачивания карты с тремя строками ===
   Widget _buildCacheButton() {
     final screenHeight = MediaQuery.of(context).size.height;
     final statusBarHeight = MediaQuery.of(context).padding.top;
@@ -691,7 +747,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                     textAlign: TextAlign.center,
                   ),
                   const Text(
-                    '~30 МБ', // Для 10×10 км примерно 30 МБ
+                    '~30 МБ',
                     style: TextStyle(
                       color: Colors.white70,
                       fontSize: 8,
@@ -731,7 +787,6 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
         children: [
           _buildMap(),
 
-          // Индикаторы (могут занимать всю ширину)
           if (_state == RunState.running || _state == RunState.paused)
             _buildStatsPanel(),
           if (_state == RunState.searchingGps)
@@ -741,10 +796,8 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           if (_state == RunState.countdown)
             _buildCountdown(),
 
-          // Кнопки управления (внизу)
           _buildControlButtons(),
 
-          // Кнопка загрузки карты – теперь поверх всего!
           if (_state != RunState.finished)
             _buildCacheButton(),
         ],

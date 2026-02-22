@@ -11,6 +11,7 @@ class ApiService {
   final http.Client _client = http.Client();
   String? _deviceId;
   int? _currentCityId;
+  String? _currentCityName; // ← ДОБАВЛЕНО: храним название города
 
   /// Инициализация - создаёт или загружает ID устройства
   Future<void> init() async {
@@ -38,6 +39,15 @@ class ApiService {
     _currentCityId = cityId;
   }
 
+  /// ← ДОБАВЛЕНО: Геттер для названия города
+  String? get currentCityName => _currentCityName;
+
+  /// ← ДОБАВЛЕНО: Установка названия города
+  void setCityName(String? cityName) {
+    _currentCityName = cityName;
+    print('🏙️ Установлен город для API: $cityName');
+  }
+
   /// Определить город по координатам
   Future<CityInfo?> getCity(double lat, double lon) async {
     try {
@@ -50,6 +60,7 @@ class ApiService {
         if (data['success'] == true && data['data']['found'] == true) {
           final cityData = data['data']['city'];
           _currentCityId = cityData['id'];
+          _currentCityName = cityData['name']; // ← Сохраняем название
           return CityInfo(
             id: cityData['id'],
             name: cityData['name'],
@@ -142,20 +153,25 @@ class ApiService {
     }
   }
 
-  /// Получить уникальный факт о POI из OSM
+  /// ← ИСПРАВЛЕНО: Получить уникальный факт о POI из OSM с указанием города
   Future<String?> getOsmPoiFact({
     required int osmId,
     required String poiName,
     required String category,
+    String? cityName, // ← ДОБАВЛЕН параметр
   }) async {
     try {
-      final url = '${AppConstants.apiUrl}/generate_fact.php?type=poi'
+      // Используем переданный город или текущий
+      final city = cityName ?? _currentCityName ?? 'этом городе';
+      
+      var url = '${AppConstants.apiUrl}/generate_fact.php?type=poi'
           '&osm_id=$osmId'
           '&name=${Uri.encodeComponent(poiName)}'
           '&category=$category'
-          '&user_id=$userId';
+          '&user_id=$userId'
+          '&city_name=${Uri.encodeComponent(city)}'; // ← ДОБАВЛЕНО
 
-      print('🗺️ Запрос факта о POI: $poiName');
+      print('🗺️ Запрос факта о POI: $poiName в городе: $city');
 
       final response = await _client.get(Uri.parse(url))
           .timeout(const Duration(seconds: 20));
@@ -259,8 +275,10 @@ class ApiService {
       if (category != null) {
         url += '&category=$category';
       }
-      if (cityName != null) {
-        url += '&city_name=${Uri.encodeComponent(cityName)}';
+      // ← ИСПРАВЛЕНО: используем переданный город или текущий
+      final city = cityName ?? _currentCityName;
+      if (city != null) {
+        url += '&city_name=${Uri.encodeComponent(city)}';
       }
       
       print('🤖 Запрос к DeepSeek: $url');
