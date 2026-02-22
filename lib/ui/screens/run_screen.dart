@@ -760,9 +760,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Future<void> _downloadMapCache() async {
     if (_currentPosition == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Местоположение ещё не определено'),
+        SnackBar(
+          content: const Text('Местоположение ещё не определено'),
           backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.only(bottom: 100, left: 10, right: 10), // Чтобы не залезала на кнопку
         ),
       );
       return;
@@ -775,6 +778,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
           backgroundColor: Colors.blue,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.only(bottom: 100, left: 10, right: 10),
         ),
       );
       return;
@@ -802,6 +806,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               backgroundColor: Colors.green,
               behavior: SnackBarBehavior.floating,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              margin: const EdgeInsets.only(bottom: 100, left: 10, right: 10), // Чтобы не залезала на кнопку
             ),
           );
         }
@@ -813,6 +818,7 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
             content: Text('Ошибка: $e'),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.only(bottom: 100, left: 10, right: 10),
           ),
         );
       }
@@ -820,6 +826,13 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildCacheButton() {
+    // Показываем кнопку только в состояниях, когда тренировка еще не началась
+    if (_state != RunState.initializing && 
+        _state != RunState.searchingGps && 
+        _state != RunState.ready) {
+      return const SizedBox.shrink();
+    }
+
     final screenHeight = MediaQuery.of(context).size.height;
     final statusBarHeight = MediaQuery.of(context).padding.top;
     final topPosition = statusBarHeight + (screenHeight * 0.40);
@@ -911,17 +924,20 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
 
           if (_state == RunState.running || _state == RunState.paused)
             _buildStatsPanel(),
+            
           if (_state == RunState.searchingGps)
             _buildGpsIndicator(),
+            
           if (_state == RunState.ready)
             _buildReadyIndicator(),
+            
           if (_state == RunState.countdown)
             _buildCountdown(),
 
           _buildControlButtons(),
 
-          if (_state != RunState.finished)
-            _buildCacheButton(),
+          // Кнопка кэша управляется внутри своего виджета
+          _buildCacheButton(),
         ],
       ),
     );
@@ -1007,16 +1023,31 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
       left: 16,
       right: 16,
       child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: Colors.black.withOpacity(0.85), borderRadius: BorderRadius.circular(20)),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.85),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.3),
+              blurRadius: 15,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
         child: Column(
           children: [
             Text(
               '${(_totalDistance / 1000).toStringAsFixed(2)}',
-              style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.white),
+              style: const TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+                letterSpacing: 2,
+              ),
             ),
-            const Text('км', style: TextStyle(color: Colors.white70)),
-            const SizedBox(height: 12),
+            const Text('КМ', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 14)),
+            const SizedBox(height: 16),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -1035,42 +1066,89 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Widget _buildStatItem(IconData icon, String value, String label) {
     return Column(children: [
       Icon(icon, color: Colors.white70, size: 20),
-      const SizedBox(height: 4),
-      Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-      Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      const SizedBox(height: 6),
+      Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+      const SizedBox(height: 2),
+      Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.w500)),
     ]);
   }
 
+  // --- УНИФИЦИРОВАННЫЙ СТИЛЬ ИНДИКАТОРОВ ---
+
   Widget _buildGpsIndicator() {
     return Positioned(
-      top: 50,
-      left: 16,
-      right: 16,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(12)),
-        child: const Row(children: [
-          SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue)),
-          SizedBox(width: 12),
-          Text('Определяем местоположение...', style: TextStyle(color: Colors.white)),
-        ]),
+      top: 60,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.75),
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: Colors.white.withOpacity(0.1)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, spreadRadius: 2),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade300),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Text(
+                'Определяем местоположение...',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.9),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   Widget _buildReadyIndicator() {
     return Positioned(
-      top: 50,
-      left: 16,
-      right: 16,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: Colors.green.withOpacity(0.9), borderRadius: BorderRadius.circular(12)),
-        child: const Row(children: [
-          Icon(Icons.check_circle, color: Colors.white),
-          SizedBox(width: 8),
-          Text('Готов к старту', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        ]),
+      top: 60,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          decoration: BoxDecoration(
+            color: Colors.green.shade600.withOpacity(0.9),
+            borderRadius: BorderRadius.circular(30),
+            boxShadow: [
+              BoxShadow(color: Colors.green.shade800.withOpacity(0.3), blurRadius: 10, spreadRadius: 1),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white, size: 20),
+              const SizedBox(width: 12),
+              Text(
+                'Готов к старту',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.95),
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1078,24 +1156,85 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
   Widget _buildCountdown() {
     return Positioned.fill(
       child: Container(
-        color: Colors.black.withOpacity(0.8),
+        color: Colors.black.withOpacity(0.85),
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(
-                _countdown > 0 ? _countdown.toString() : 'СТАРТ!',
-                style: TextStyle(
-                  fontSize: 80,
-                  fontWeight: FontWeight.bold,
-                  color: _countdown > 0 ? Colors.yellow : Colors.green,
+              if (_countdown > 0) ...[
+                // Большая цифра в круге
+                Container(
+                  width: 160,
+                  height: 160,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.deepPurple.shade300, width: 4),
+                    gradient: LinearGradient(
+                      colors: [Colors.deepPurple.shade600, Colors.deepPurple.shade900],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.deepPurple.withOpacity(0.5),
+                        blurRadius: 30,
+                        spreadRadius: 5,
+                      ),
+                    ],
+                  ),
+                  child: Center(
+                    child: Text(
+                      _countdown.toString(),
+                      style: const TextStyle(
+                        fontSize: 80,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        height: 1.0,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                _countdown > 0 ? 'Приготовьтесь!' : 'Бегите!',
-                style: const TextStyle(fontSize: 24, color: Colors.white),
-              ),
+                const SizedBox(height: 30),
+                Text(
+                  'Приготовьтесь!',
+                  style: TextStyle(
+                    fontSize: 22,
+                    color: Colors.white.withOpacity(0.8),
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ] else ...[
+                // Надпись СТАРТ
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade500,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(color: Colors.green.shade600.withOpacity(0.6), blurRadius: 20, spreadRadius: 2),
+                    ],
+                  ),
+                  child: const Text(
+                    'СТАРТ!',
+                    style: TextStyle(
+                      fontSize: 56,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      letterSpacing: 4,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 30),
+                Text(
+                  'Начинайте бег!',
+                  style: TextStyle(
+                    fontSize: 22,
+                    color: Colors.white.withOpacity(0.8),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1117,10 +1256,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green,
                 foregroundColor: Colors.white,
-                minimumSize: const Size(150, 60),
+                minimumSize: const Size(180, 65),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                elevation: 8,
+                shadowColor: Colors.green.withOpacity(0.4),
               ),
-              child: const Text('СТАРТ', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              child: const Text('СТАРТ', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             ),
           if (_state == RunState.running)
             ElevatedButton(
@@ -1128,10 +1269,12 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.orange,
                 foregroundColor: Colors.white,
-                minimumSize: const Size(150, 60),
+                minimumSize: const Size(180, 65),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                elevation: 8,
+                shadowColor: Colors.orange.withOpacity(0.4),
               ),
-              child: const Text('ПАУЗА', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              child: const Text('ПАУЗА', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             ),
           if (_state == RunState.paused)
             Row(children: [
@@ -1140,10 +1283,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green,
                   foregroundColor: Colors.white,
-                  minimumSize: const Size(120, 60),
+                  minimumSize: const Size(130, 65),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  elevation: 8,
                 ),
-                child: const Text('ДАЛЬШЕ', style: TextStyle(fontSize: 18)),
+                child: const Text('ДАЛЬШЕ', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(width: 16),
               ElevatedButton(
@@ -1151,10 +1295,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red,
                   foregroundColor: Colors.white,
-                  minimumSize: const Size(120, 60),
+                  minimumSize: const Size(130, 65),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  elevation: 8,
                 ),
-                child: const Text('СТОП', style: TextStyle(fontSize: 18)),
+                child: const Text('СТОП', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
             ]),
           if (_state == RunState.finished)
@@ -1163,10 +1308,11 @@ class _RunScreenState extends State<RunScreen> with WidgetsBindingObserver {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
                 foregroundColor: Colors.white,
-                minimumSize: const Size(200, 60),
+                minimumSize: const Size(220, 65),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                elevation: 8,
               ),
-              child: const Text('Новая тренировка', style: TextStyle(fontSize: 18)),
+              child: const Text('Новая тренировка', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ),
         ],
       ),

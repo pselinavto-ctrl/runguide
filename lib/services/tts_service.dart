@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:audio_session/audio_session.dart';
+import '../utils/text_cleaner.dart'; // добавлен импорт
 
 class TtsService {
   final FlutterTts _tts = FlutterTts();
@@ -79,19 +80,20 @@ class TtsService {
     }
   }
 
-  /// Произнести текст (с добавлением в очередь)
+  /// Произнести текст (с добавлением в очередь) - теперь с очисткой
   Future<void> speak(String text) async {
     if (text.isEmpty) return;
     
-    _queue.add(text);
-    print('TTS: Добавлено в очередь (${_queue.length}): ${text.substring(0, text.length > 50 ? 50 : text.length)}...');
+    final cleanText = TextCleaner.cleanForTts(text); // ← очищаем
+    _queue.add(cleanText);
+    print('TTS: Добавлено в очередь (${_queue.length}): ${cleanText.substring(0, cleanText.length > 50 ? 50 : cleanText.length)}...');
     
     if (!_isProcessingQueue) {
       await _processNextInQueue();
     }
   }
 
-  /// Произнести текст немедленно (очищает очередь)
+  /// Произнести текст немедленно (очищает очередь) - с очисткой
   Future<void> speakNow(String text) async {
     if (text.isEmpty) return;
     
@@ -100,7 +102,8 @@ class TtsService {
     _isSpeaking = false;
     _isPaused = false;
     
-    await _speakWithDucking(text);
+    final cleanText = TextCleaner.cleanForTts(text); // ← очищаем
+    await _speakWithDucking(cleanText);
   }
 
   /// Обработка очереди
